@@ -1,16 +1,14 @@
 import numpy as np 
 import vtk
 from vtk.util.numpy_support import vtk_to_numpy
-import vmtk
 from pathlib import Path
-import pyvista as pv
 import matplotlib.pyplot as plt
 from scipy.signal import argrelextrema
 from datetime import datetime
 import pandas as pd
 
 class LumpedParameter:
-    def __init__(self, cline_file, Q, rho, Kt, mu, re, curv, exp, fig_save_folder, debug, debug_options):
+    def __init__(self, cline_file, Q, rho, Kt, mu, re, curv, exp, fig_save_folder, debug_options):
         self.centerline_file = cline_file
         self.flow_rate = Q
         self.density = rho
@@ -20,9 +18,8 @@ class LumpedParameter:
         self.curvature = curv
         self.expansion = exp
         self.figure_save_folder = fig_save_folder
-        self.debug_bool = debug
         
-        if debug:
+        if debug_options:
             self.debug_file_path = debug_options[0]
             self.debug_case_name = debug_options[1]
 
@@ -614,33 +611,30 @@ class LumpedParameter:
         lp.generate_pressure_drop_contributions_plots()
         #lp.compare_hemodynamics_pressure("/home/kabir/masters_files/CFD_Results/From_Rojin/PTSeg028_base_0p64_centerline_hemodynamics_Qin5.58mLs.csv")
 
-if __name__ == "__main__":
+def main():
     #CONSTANTS
     BLOOD_DYNAMIC_VISCOSITY = 0.04 #dynamic viscosity mu value [Poise]
     INLET_FLOW_RATE = 5.58 #mL/s - same as Back to Bernoulli paper
     KT = 1.52 #Same as Mirramezani paper
     DENSITY = 1.06 #g/mL or g/cm^3
     REYNOLDS_NUMBER = 300 #Reynold's number for cerebral venous system - 300 is a placeholder value for now
-
-    #For WSL:
-    #CLINE_FILE_PATH = "/home/kabir/masters_files/PT/PTSeg028_v3/PTSeg028_cl_centerline_graph_vmtk.vtp"
-    #CLINE_FILE_PATH = "/home/kabir/masters_files/DLP/Gurnish_CaseC_PTSeg106/CaseC_cl_centerline_graph_vmtk.vtp"
-    CLINE_FILE_PATH = "/home/kabir/masters_files/CFD_Results/From_Rojin/PTSeg028_cl_centerline_graph_vmtk.vtp"
-    #For Linux:
-    # CLINE_FILE_PATH = "/home/kabir/Documents/PT/PTSeg028/PTSeg028_cl_centerline_graph_vmtk.vtp"
-    
+        
     EXPANSION = 3 #0 (no expansion), 1(exp res all at one point), 2(exp res applied linearly), 3(exp res applied proportional to radius), 4(exp res applied proportional to area)
     CURVATURE = 1 #0 - no curvature resistance term added, 1 - curvature resistance term added
-    FIGURE_SAVE_FOLDER = "../dlp_output" #Path to folder where the figures should be saved
     
-    DEBUG = True #Flag to output verbose results to debug text file specified below
-    DEBUG_FILE_PATH = "../dlp_output/debug_dlp_casec.txt" #Won't be used if the DEBUG flag is set to False
-    DEBUG_CASE_NAME = "CaseC" #A name to identify in the debug file
-
-    if DEBUG:
-        debug_options = [DEBUG_FILE_PATH, DEBUG_CASE_NAME]
-    else:
-        debug_options = None
+    try:
+        import config
+        CLINE_FILE_PATH = config.CLINE_FILE_PATH
+        FIGURE_SAVE_FOLDER = config.FIGURE_SAVE_FOLDER #Path to folder where the figures should be saved
+        DEBUG = True #Flag to output verbose results to debug text file specified below
+        if DEBUG:
+            DEBUG_FILE_PATH = config.DEBUG_FILE_PATH #File path for debug info file
+            DEBUG_CASE_NAME = config.DEBUG_CASE_NAME #A name to identify in the debug file
+            debug_options = [DEBUG_FILE_PATH, DEBUG_CASE_NAME]
+        else:
+            debug_options = None
+    except Exception as e:
+        raise Exception(f"Please ensure that the config.py file is present in the same folder as this file and all the necessary variables are present:\n{e}")
 
     lp = LumpedParameter(
         cline_file=CLINE_FILE_PATH,
@@ -652,8 +646,10 @@ if __name__ == "__main__":
         curv=CURVATURE,
         exp=EXPANSION,
         fig_save_folder=FIGURE_SAVE_FOLDER,
-        debug=DEBUG,
         debug_options=debug_options
     )
 
     lp.run()
+
+if __name__ == "__main__":
+    main()

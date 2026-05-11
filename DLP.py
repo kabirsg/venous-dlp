@@ -612,25 +612,21 @@ class LumpedParameter:
         #lp.compare_hemodynamics_pressure("/home/kabir/masters_files/CFD_Results/From_Rojin/PTSeg028_base_0p64_centerline_hemodynamics_Qin5.58mLs.csv")
 
 def main():
-    #CONSTANTS
-    BLOOD_DYNAMIC_VISCOSITY = 0.04 #dynamic viscosity mu value [Poise]
-    INLET_FLOW_RATE = 5.58 #mL/s - same as Back to Bernoulli paper
-    KT = 1.52 #Same as Mirramezani paper
-    DENSITY = 1.06 #g/mL or g/cm^3
-    REYNOLDS_NUMBER = 300 #Reynold's number for cerebral venous system - 300 is a placeholder value for now
-        
-    EXPANSION = 3 #0 (no expansion), 1(exp res all at one point), 2(exp res applied linearly), 3(exp res applied proportional to radius), 4(exp res applied proportional to area)
-    CURVATURE = 1 #0 - no curvature resistance term added, 1 - curvature resistance term added
-    
     try:
         import config
-        CLINE_FILE_PATH = config.CLINE_FILE_PATH
-        FIGURE_SAVE_FOLDER = config.FIGURE_SAVE_FOLDER #Path to folder where the figures should be saved
-        DEBUG = True #Flag to output verbose results to debug text file specified below
-        if DEBUG:
-            DEBUG_FILE_PATH = config.DEBUG_FILE_PATH #File path for debug info file
-            DEBUG_CASE_NAME = config.DEBUG_CASE_NAME #A name to identify in the debug file
-            debug_options = [DEBUG_FILE_PATH, DEBUG_CASE_NAME]
+        BLOOD_DYNAMIC_VISCOSITY = config.dlp_blood_dyn_visc
+        INLET_FLOW_RATE = config.dlp_inlet_flow_rate
+        KT = config.dlp_kt
+        DENSITY = config.dlp_density
+        REYNOLDS_NUMBER = config.dlp_reynolds_number
+
+        EXPANSION = config.dlp_exp_term 
+        CURVATURE = config.dlp_curv_term
+
+        CLINE_FILE_PATH = config.dlp_cline_file_path
+        FIGURE_SAVE_FOLDER = config.dlp_fig_save_folder
+        if config.dlp_debug:
+            debug_options = [config.dlp_debug_file_path, config.dlp_debug_case_name]
         else:
             debug_options = None
     except Exception as e:

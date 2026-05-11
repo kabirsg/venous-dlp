@@ -5,6 +5,8 @@ import vtk
 import csv
 import pandas as pd
 import pyvista as pv
+import numpy as np
+import os
 
 def load_centerline(vtp_path: str):
     #Using pyvista to load the centerline natively
@@ -12,19 +14,20 @@ def load_centerline(vtp_path: str):
     num_points = polydata.n_points
     points = polydata.points
 
-    tangents = polydata.get_array("FrenetTangent", preference="point")
-    if tangents is None: 
-        raise ValueError("VTP file has no tangents - Run geometry_tools centerline generation")
+    if "FrenetTangent" not in polydata.point_data:
+        raise ValueError("No FrenetTangent in VTP centerline file - run Geometry Tools first and retry")
+    tangents = np.array(polydata.point_data["FrenetTangent"])
 
-    misr = polydata.GetPointData().GetArray("MaximallyInscribedSphereRadius")
-    if misr is None:
-        raise ValueError("VTP file has no MaximallyInscribedSphereRadius - Run geometry_tools centerline generation")
+    if "MaximumInscribedSphereRadius" not in polydata.point_data:
+        raise ValueError("No MaximumInscribedSphereRadius in VTP centerline file - run Geometry Tools first and retry")
+    misr = np.array(polydata.point_data["MaximumInscribedSphereRadius"])
     
     return points, tangents, misr, num_points
 
 def cross_section_metrics(mesh: pv.PolyData, origin:np.ndarray, normal:np.ndarray):
     normal = normal / (np.linalg.norm(normal) + 1e-15)
 
+    #Slicing the mesh with the already calculated normal plane
     try:
         slc = mesh.slice(normal=normal, origin=origin)
     except:
@@ -33,6 +36,8 @@ def cross_section_metrics(mesh: pv.PolyData, origin:np.ndarray, normal:np.ndarra
     if slc.n_points == 0:
         return None, None, None, None
     
+    #Extracting only the region closest to the centerline origin
+    #This avoids adding up areas from neighbouring vessel branches that the infinite plane might cut
     conn = vtk.vtkPolyDataConnectivityFilter()
     conn.SetInputData(slc)
     conn.SetExtractionModeToClosestPointRegion()
@@ -45,14 +50,14 @@ def cross_section_metrics(mesh: pv.PolyData, origin:np.ndarray, normal:np.ndarra
 
     #Calculate perimeter using cell sizes (sum of line segment lengths)
     slc_sized = closest_slc.compute_cell_sizes(length=True, area=False, volume=False)
-    lengths = slc_sized.get_array("Length", preference="cell")
-    perimeter = np.sum(lengths) if lengths is not None else 0.0
+    perimeter = np.sum(slc_sized.cell_data["Length"])
 
+    #Triangulate the 3D contour to calculate internal area and generate a solid 2D planar surface
     triangulator = vtk.vtkContourTriangulator()
     triangulator.SetInputData(closest_slc)
     triangulator.Update()
 
-    solid_slice = pv.wrap(triangulator.getOutput())
+    solid_slice = pv.wrap(triangulator.GetOutput())
     if solid_slice.n_points == 0:
         return None, None, None, None
 
@@ -83,7 +88,7 @@ def validate_csv(csv_path: str, vtp_path: str):
         csv_points = csv_points[:limit]
         vtp_points = vtp_points[:limit]
     
-    coord_diff = np.linalg.norma(csv_points - vtp_points, axis=1)
+    coord_diff = np.linalg.norm(csv_points - vtp_points, axis=1)
     max_coord_err = np.max(coord_diff)
     print(f"Max Coordinate Difference | {max_coord_err:.6f}")
 
@@ -95,7 +100,7 @@ def validate_csv(csv_path: str, vtp_path: str):
         if vtp_name in vtp_data:
             diff = np.abs(df[col].values - vtp_data[vtp_name])
             print(f"{col:<20} | Max Diff: {np.max(diff):.2e}")
-            is_consistent = np.allclose(df['MISR'].values, vtp_data['MaximumInscibedSphereRadius'], atol=1e-12)
+            is_consistent = np.allclose(df['MISR'].values, vtp_data['MaximumInscribedSphereRadius'], atol=1e-12)
             print(f"Are all values within machine tolerance: {is_consistent}")
         else:
             print(f"{col:<20} | Array '{vtp_name}' not found in VTP")
@@ -107,15 +112,23 @@ def validate_csv(csv_path: str, vtp_path: str):
         print(f"{'Tangents (Combined)':<20} | Max Diff: {np.max(tangent_diff):2e}")
 
 def main():
-    STL = ""
-    VTP = ""
-    CSV = ""
-
-    OUTLINES_VTP = "cross_section_outlines.vtp"
-    PLANES_VTP = "cross_section_planes.vtp"
+    try:
+        import config
+        STL = config.hdp_stl
+        VTP = config.hdp_vtp
+        CSV = config.hdp_csv
+        VIZ_DIR = config.hdp_viz_dir
+    except:
+        STL = "/home/kabir/masters_files/PT/PTSeg028_v3/PTSeg028_base_0p64.stl"
+        VTP = "/home/kabir/masters_files/PT/PTSeg028_v3/PTSeg028_cl_centerline_graph_vmtk.vtp"
+        CSV = "cross_sections_pv.csv"
+        VIZ_DIR = "cross_sections_viz"
 
     SKIP = 1
     NO_PROGRESS = False
+
+    print(f"Creating output directory (if it doesn't exist)")
+    os.makedirs(VIZ_DIR, exist_ok=True)
 
     print(f"Loading mesh: {STL}...")
     mesh = pv.read(STL)
@@ -136,8 +149,6 @@ def main():
     results = []
     skipped = 0
 
-    all_outlines = []
-    all_planes = []
     for count, i in enumerate(indices):
         if not NO_PROGRESS and count % max(1, len(indices)//20) == 0:
             pct = 100 * count / max(1, len(indices))
@@ -149,8 +160,8 @@ def main():
             skipped += 1
             area = perimeter = Dh = float("nan")
         else:
-            all_outlines.append(outline)
-            all_planes.append(solid_slice)
+            outline.save(os.path.join(VIZ_DIR, f"outline_{i:04d}.vtp"))
+            solid_slice.save(os.path.join(VIZ_DIR, f"plane_{i:04d}.vtp"))
         
         results.append({
             "point_index": i,
@@ -163,10 +174,12 @@ def main():
             "MISR": misr[i],
             "area": area,
             "perimeter": perimeter,
-            "hydralic_diameter": Dh
+            "hydraulic_diameter": Dh
         })
+
     print()
 
+    #Write CSV
     fieldnames = list(results[0].keys())
     with open(CSV, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -177,16 +190,7 @@ def main():
     print(f"\nDone. {valid}/{len(results)} points had valid cross-sections")
     print(f"Skipped (no intersection): {skipped}")
     print(f"Results written to: {CSV}")
-
-    if all_outlines and all_planes:
-        merged_outlines = pv.MultiBlock(all_outlines).combine()
-        merged_planes = pv.MultiBlock(all_planes).combine()
-
-        merged_outlines.save(OUTLINES_VTP)
-        merged_planes.save(PLANES_VTP)
-        print(f"\nSaved cross-section 3D visual data:")
-        print(f"  Outlines: {OUTLINES_VTP}")
-        print(f"  Planes: {PLANES_VTP}")
+    print(f"Visualizations saved to folder: '{VIZ_DIR}/' (Load into Paraview to scroll)")
 
     areas = np.array([r["area"] for r in results if not np.isnan(r["area"])])
     Dhs = np.array([r["hydraulic_diameter"] for r in results if not np.isnan(r["hydraulic_diameter"])])

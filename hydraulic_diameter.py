@@ -115,10 +115,10 @@ def validate_csv(csv_path: str, vtp_path: str):
 def main():
     try:
         import config
-        STL = config.hdp_stl
-        VTP = config.hdp_vtp
-        CSV = config.hdp_csv
-        VIZ_DIR = config.hdp_viz_dir
+        STL = config.hd_stl
+        VTP = config.hd_vtp
+        CSV = config.hd_csv
+        VIZ_DIR = config.hd_viz_dir
     except:
         STL = ""
         VTP = ""

@@ -5,11 +5,12 @@ Based on the Mirramezani et al. "A Distributed Lumped Parameter Model of Blood F
 This repository is to validate this DLP for cerebral venous geometries.
 
 Required packages for DLP solver package versions that have been tested are denoted after the equal sign. Ex. python=3.14.4:
+- python=3.14.4
 - vtk=9.5.2
 - numpy=2.4.3
 - pandas=3.0.2
 - scipy=1.17.1
-- matplotlib
+- matplotlib=3.10.9
 
 The hydraulic_diameter.py script calculates the area, perimeter, and hydraulic diameter at each centerline point (given a centerline file from Geometry Tools)
 Additional packages required for hydraulic_diameter calculation script:

@@ -606,10 +606,10 @@ class LumpedParameter:
             desc = f"{'='*50}\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\t{self.debug_case_name}->\tEXPANSION = {self.expansion}\tCURVATURE = {self.curvature}"
             self.debug(txt_file_name=self.debug_file_path, desc=desc)
         
-        # lp.compare_distances("/home/kabir/masters_files/CFD_Results/From_Rojin/PTSeg028_base_0p64_centerline_hemodynamics_Qin5.58mLs.csv")
-        lp.generate_pressure_plots()
-        lp.generate_pressure_drop_contributions_plots()
-        #lp.compare_hemodynamics_pressure("/home/kabir/masters_files/CFD_Results/From_Rojin/PTSeg028_base_0p64_centerline_hemodynamics_Qin5.58mLs.csv")
+        # self.compare_distances("/home/kabir/masters_files/CFD_Results/From_Rojin/PTSeg028_base_0p64_centerline_hemodynamics_Qin5.58mLs.csv")
+        self.generate_pressure_plots()
+        self.generate_pressure_drop_contributions_plots()
+        # self.compare_hemodynamics_pressure("/home/kabir/masters_files/CFD_Results/From_Rojin/PTSeg028_base_0p64_centerline_hemodynamics_Qin5.58mLs.csv")
 
 def main():
     try:

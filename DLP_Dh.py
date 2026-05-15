@@ -65,7 +65,9 @@ class LumpedParameter:
         #self.radius_array_np = vtk_to_numpy(self.polydata.GetPointData().GetArray("MaximumInscribedSphereRadius"))
         self.radius_array_np = vtk_to_numpy(self.polydata.GetPointData().GetArray("HydraulicDiameter"))
         self.radius_array_np /= 10 #Adjusting for units: mm -> cm
-        self.radius_array_np /= 4 #Adjusting for hydraulic diameter -> hydraulic radius
+        self.radius_array_np /= 2 #Adjusting for hydraulic diameter -> hydraulic radius
+
+        self.area_array_np = vtk_to_numpy(self.polydata.GetPointData().GetArray("CrossSectionArea"))
         
         self.point_array_np = vtk_to_numpy(self.polydata.GetPoints().GetData())
     
@@ -81,6 +83,7 @@ class LumpedParameter:
             self.curvature_array_np = self.curvature_array_np[::-1]
             self.length_array = self.length_array[::-1]
             self.radius_array_np = self.radius_array_np[::-1]
+            self.area_array_np = self.area_array_np[::-1]
     
     '''
     C: This is the Wormseley number, not the zeta unsteady value.
@@ -200,8 +203,10 @@ class LumpedParameter:
         #If the first element is a maximum, no issues
         #If it's a minimum
         if first == "min":
-            A_0 = np.pi * self.radius_array_np[extrema_array[0]] ** 2
-            A_s = np.pi * self.radius_array_np[extrema_array[1]] ** 2
+            # A_0 = np.pi * self.radius_array_np[extrema_array[0]] ** 2
+            # A_s = np.pi * self.radius_array_np[extrema_array[1]] ** 2
+            A_0 = self.area_array_np[extrema_array[0]]
+            A_s = np.pi * self.area_array_np[extrema_array[1]]
 
             delta_R = self.calculate_added_resistance(A_s, A_0)
             exp_res_dict[min_indices[i]] = delta_R #C: i is undefined - i think it supposed to be 0
@@ -232,19 +237,25 @@ class LumpedParameter:
         else:
             for i in range(0, len(min_indices)-1):
                 extrema_i = np.where(extrema_array == min_indices[i])[0][0]
-                A_s = np.pi * self.radius_array_np[min_indices[i]] ** 2
-                A_0 = np.pi * ((self.radius_array_np[extrema_array[extrema_i-1]] + self.radius_array_np[extrema_array[extrema_i+1]]) / 2) ** 2
+                A_s = self.area_array_np[min_indices[i]]
+                A_0 = (self.area_array_np[extrema_array[extrema_i-1]] + self.area_array_np[extrema_array[extrema_i+1]]) / 2
+                #A_s = np.pi * self.radius_array_np[min_indices[i]] ** 2
+                #A_0 = np.pi * ((self.radius_array_np[extrema_array[extrema_i-1]] + self.radius_array_np[extrema_array[extrema_i+1]]) / 2) ** 2
                 
                 delta_R = self.calculate_added_resistance(A_s, A_0)
                 exp_res_dict[min_indices[i]] = delta_R
                 expansion_resistance += delta_R
 
             if last == "min":
-                A_s = np.pi * self.radius_array_np[extrema_array[-1]] ** 2
-                A_0 = np.pi * self.radius_array_np[extrema_array[-2]] ** 2
+                A_s = self.area_array_np[extrema_array[-1]]
+                A_0 = self.area_array_np[extrema_array[-2]]
+                # A_s = np.pi * self.radius_array_np[extrema_array[-1]] ** 2
+                # A_0 = np.pi * self.radius_array_np[extrema_array[-2]] ** 2
             else:
-                A_s = np.pi * self.radius_array_np[extrema_array[-2]] ** 2
-                A_0 = np.pi * ((self.radius_array_np[extrema_array[-3]] + self.radius_array_np[extrema_array[-1]]) / 2) ** 2
+                A_s = self.area_array_np[extrema_array[-2]]
+                A_0 = (self.area_array_np[extrema_array[-3]] + self.area_array_np[extrema_array[-1]]) / 2
+                # A_s = np.pi * self.radius_array_np[extrema_array[-2]] ** 2
+                # A_0 = np.pi * ((self.radius_array_np[extrema_array[-3]] + self.radius_array_np[extrema_array[-1]]) / 2) ** 2
             
             delta_R = self.calculate_added_resistance(A_s, A_0)
             exp_res_dict[min_indices[-1]] = delta_R
@@ -612,10 +623,10 @@ class LumpedParameter:
             desc = f"{'='*50}\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\t{self.debug_case_name}->\tEXPANSION = {self.expansion}\tCURVATURE = {self.curvature}"
             self.debug(txt_file_name=self.debug_file_path, desc=desc)
         
-        # lp.compare_distances("/home/kabir/masters_files/CFD_Results/From_Rojin/PTSeg028_base_0p64_centerline_hemodynamics_Qin5.58mLs.csv")
+        # self.compare_distances("/home/kabir/masters_files/CFD_Results/From_Rojin/PTSeg028_base_0p64_centerline_hemodynamics_Qin5.58mLs.csv")
         self.generate_pressure_plots()
         self.generate_pressure_drop_contributions_plots()
-        #lp.compare_hemodynamics_pressure("/home/kabir/masters_files/CFD_Results/From_Rojin/PTSeg028_base_0p64_centerline_hemodynamics_Qin5.58mLs.csv")
+        # self.compare_hemodynamics_pressure("/home/kabir/masters_files/CFD_Results/From_Rojin/PTSeg028_base_0p64_centerline_hemodynamics_Qin5.58mLs.csv")
 
 def main():
     try:

@@ -158,6 +158,7 @@ def main():
     c_areas = np.full(n_total, np.nan)
     c_perimeters = np.full(n_total, np.nan)
     c_dhs = np.full(n_total, np.nan)
+    c_ratios = np.full(n_total, np.nan)
 
     for count, i in enumerate(indices):
         if not NO_PROGRESS and count % max(1, len(indices)//20) == 0:
@@ -165,6 +166,7 @@ def main():
             print(f'Progress:{pct:5.1f}% point {i}/{n_total}', end="\r", flush=True) #Updating the progress tracker every 5%
 
         area, perimeter, Dh, outline, solid_slice = cross_section_metrics(mesh, points[i], tangents[i])
+        Dh_misr_ratio = Dh / misr[i] if misr[i] != 0 else 0.0
 
         if area is None:
             skipped += 1
@@ -181,6 +183,7 @@ def main():
             c_areas[i] = area
             c_perimeters[i] = perimeter
             c_dhs[i] = Dh
+            c_ratios[i] = Dh_misr_ratio
         
         #Appending to the results array for putting into the csv file
         results.append({
@@ -194,7 +197,8 @@ def main():
             "MISR": misr[i],
             "area": area,
             "perimeter": perimeter,
-            "hydraulic_diameter": Dh
+            "hydraulic_diameter": Dh,
+            "Dh_MISR_Ratio": Dh_misr_ratio
         })
 
     print()
@@ -212,6 +216,7 @@ def main():
     out_centerline.point_data["CrossSectionArea"] = c_areas
     out_centerline.point_data["CrossSectionPerimeter"] = c_perimeters
     out_centerline.point_data["HydraulicDiameter"] = c_dhs
+    out_centerline.point_data["DhMISRRatio"] = c_ratios
 
     OUT_VTP = VTP.replace(".vtp", "_with_metrics.vtp") #Creating file path for new vtp centerline file with metrics
     out_centerline.save(OUT_VTP)

@@ -41,7 +41,7 @@ def main():
     _, nearest_cl_indices = tree.query(surf_pts)
 
     # 5. Copy the data arrays over
-    metrics_to_map = ["CrossSectionArea", "CrossSectionPerimeter", "HydraulicDiameter", "MaximumInscribedSphereRadius"]
+    metrics_to_map = ["CrossSectionArea", "CrossSectionPerimeter", "HydraulicDiameter", "MaximumInscribedSphereRadius", "DhMISRRatio"]
     
     for metric in metrics_to_map:
         if metric in cl.point_data:

@@ -6,25 +6,21 @@ import matplotlib.pyplot as plt
 from scipy.signal import argrelextrema
 from datetime import datetime
 import pandas as pd
+import pickle
 
 class LumpedParameter:
-    def __init__(self, cline_file, Q, rho, Kt, mu, re, curv, exp, fig_save_folder, debug_options):
+    def __init__(self, cline_file, Q, rho, Kt, mu, exp, fig_save_folder, case_name, inlet_point_idx=0):
         self.centerline_file = cline_file
         self.flow_rate = Q
         self.density = rho
         self.Kt = Kt
         self.dyn_viscosity = mu
-        self.reynolds = re
-        self.curvature = curv
         self.expansion = exp
         self.figure_save_folder = fig_save_folder
-        
-        if debug_options is not None:
-            self.debug_file_path = debug_options[0]
-            self.debug_case_name = debug_options[1]
-            self.debug_bool = True
-        else:
-            self.debug_bool = False
+        self.inlet_point_idx = inlet_point_idx
+        self.case_name = case_name
+
+        self.no_visc_in_exp = True
 
         #Creating the polydata object
         if not Path(self.centerline_file).exists(): 
@@ -34,27 +30,71 @@ class LumpedParameter:
         self.create_arrays() #Get the data from the centerline file
 
     '''
-    Creating the polydata reader that other functions can use
+    Creating the polydata reader object that other class functions can use
     '''
     def create_polydata(self):
-        reader = vtk.vtkXMLPolyDataReader() 
+        reader = vtk.vtkXMLPolyDataReader()
         reader.SetFileName(self.centerline_file)
         reader.Update()
         self.polydata = reader.GetOutput()
 
     '''
-    Code from Rojin to more accurately calculate the length array, given that the inlet and outlet is messed up
-    FIX: THIS SHOULDN'T HAVE A DEFAULT
+    Accurately calculate the length array, even if the inlets and outlets were not labelled correctly. 
+    The self.inlet_point_idx variable determines where the inlet point is
     '''
-    def create_length_array(self, inlet_point_id=1333):
+    def create_length_array(self):
         diffs = np.diff(self.point_array_np, axis=0)
         seg_lengths = np.linalg.norm(diffs, axis=1)
         cumulative = np.concatenate([[0.0], np.cumsum(seg_lengths)])
-        self.length_array = np.abs(cumulative - cumulative[inlet_point_id]) / 10
-        return
+        if self.inlet_point_idx is None:
+            ref = cumulative[0]
+        else:
+            ref = cumulative[self.inlet_point_idx]
+        length_array = np.abs(cumulative - ref) / 10
+        return length_array
 
     '''
-    Creating arrays for the other functions to use
+    Creates an array which has the length of each segment that belongs to each centerline point.
+    For a given point P_i, the segment length = 0.5*(dist(P_i-1, P_i) + dist(P_i, P_i+1))
+    Must be called AFTER self.create_length_array function has been run - requires self.length_array variable to exist
+    C: Handling of the first and last elements have to change
+    '''
+    def create_segments_array(self):
+        seg_lens_array = []
+        #Handling i = 0 (first centerline point)
+        seg_lens_array.append(self.length_array[1]/2)
+
+        #For the middle elements
+        for i in range(1, len(self.length_array)-1):
+            back_L = self.length_array[i] - self.length_array[i-1]
+            forward_L = self.length_array[i+1] - self.length_array[i]
+            seg_length = back_L/2 + forward_L/2
+            seg_lens_array.append(seg_length)
+
+        #Handle i = -1 case (last centerline point)
+        seg_lens_array.append((self.length_array[-1] - self.length_array[-2])/2)
+
+        return seg_lens_array
+
+    '''
+    Calculates the Reynold's number for each centerline point
+    
+    Returns:
+        - reynolds: List of the Reynold's number for all points. [Unitless]
+    '''
+    def create_reynolds_array(self):
+        reynolds = []
+        areas= self.area_array_np.copy()
+        radii = self.radius_array_np.copy()
+        flow_rate = self.flow_rate
+        dyn_visc = self.dyn_viscosity
+        density = self.density
+        for i, rad in enumerate(radii):
+            re = ((flow_rate * density / areas[i]) * (rad*2)) / dyn_visc #Re = = ((Q/CSA)*Dh)/dynamic viscosity 
+            reynolds.append(re)
+        return reynolds
+    '''
+    Creating arrays for the other class functions to use
     Created arrays:
         - self.radius_array_np - Numpy array containing Maximum Inscribed Sphere Radius at every centerline point [Units = cm]
         - self.point_array_np - Numpy array containing Location of every centerline point [Units = cm]
@@ -62,34 +102,35 @@ class LumpedParameter:
         - self.length_array - Numpy array containing the length along the centerline for every point [Units = cm]
     '''
     def create_arrays(self):
-        #self.radius_array_np = vtk_to_numpy(self.polydata.GetPointData().GetArray("MaximumInscribedSphereRadius"))
-        self.radius_array_np = vtk_to_numpy(self.polydata.GetPointData().GetArray("HydraulicDiameter"))
+        # self.radius_array_np = vtk_to_numpy(self.polydata.GetPointData().GetArray("MaximumInscribedSphereRadius"))
+        self.radius_array_np = vtk_to_numpy(self.polydata.GetPointData().GetArray("HydraulicDiameter")) #Using hydraulic diameter instead of MISR
         self.radius_array_np /= 10 #Adjusting for units: mm -> cm
+        self.hyd_dia_array_np = self.radius_array_np.copy()
         self.radius_array_np /= 2 #Adjusting for hydraulic diameter -> hydraulic radius
 
         self.area_array_np = vtk_to_numpy(self.polydata.GetPointData().GetArray("CrossSectionArea"))
+        self.area_array_np /= 100 #Adjusting for units: mm^2 -> cm^2
+        
+        self.perimeter_array_np = vtk_to_numpy(self.polydata.GetPointData().GetArray("CrossSectionPerimeter"))
+        self.perimeter_array_np /= 10 #Adjusting for units: mm -> cm
         
         self.point_array_np = vtk_to_numpy(self.polydata.GetPoints().GetData())
     
         self.curvature_array_np = vtk_to_numpy(self.polydata.GetPointData().GetArray("Curvature"))
         self.curvature_array_np *= 10 #Adjusting for units: 1/mm -> 1/cm
-        
-        self.create_length_array(inlet_point_id=1333) #C: Fix - this shouldn't be hardcoded or even needed
+        self.curvature_array_np = 1/self.curvature_array_np #Converting this to the radius of curvature. Units: cm. Note: Will print a warning if division by zero but will make value infinity and move on
 
-        #This is needed because PTSeg028 has flipped inlets and outlets
-        self.needs_flipping = True #C: This is weird I don't like this
-        if self.needs_flipping:
+        self.length_array = self.create_length_array()
+        self.seg_lens_array = self.create_segments_array()
+        self.re_array = self.create_reynolds_array()
+
+        #Reverses the centerline points if the inlets and outlets are inversed
+        if self.inlet_point_idx == -1:
             self.point_array_np = self.point_array_np[::-1]
             self.curvature_array_np = self.curvature_array_np[::-1]
             self.length_array = self.length_array[::-1]
             self.radius_array_np = self.radius_array_np[::-1]
             self.area_array_np = self.area_array_np[::-1]
-    
-    '''
-    C: This is the Wormseley number, not the zeta unsteady value.
-    '''
-    def calculate_unsteady_term(self, rad):
-        return rad * np.sqrt(self.density / self.dyn_viscosity)
 
     '''
     Calculating the viscous resistance term
@@ -99,11 +140,10 @@ class LumpedParameter:
     This value is multiplied by the maximum between gamma and zeta with gamma being resistances from curvature effects and zeta being resistances from unsteady effects
 
     The value of the curvature multiplier (gamma) is defined as: 0.1033*sqrt(K)*((1 + (1.729/K)^0.5) - (1.315/sqrt(K)))^-3 for every point
-    The value of the unsteady multiplier (zeta) is defined as the Womersley number: zeta = alpha = R * sqrt(rho * frequency / mu) with frequency = 1
     
     This makes the final viscous resistance that is used for the calculation to be the following
     
-    Final Viscous Resistance calculation: R_v = (8*mu/pi) * INT_0_L(max{gamma, zeta} * 1/(R(x)^4) dx)
+    Final Viscous Resistance calculation: R_v = (8*mu/pi) * INT_0_L(gamma * 1/(R(x)^4) dx)
 
     Units: Q = mL/s (cm^3/s), L = cm, R = cm, K = -, a = 1/cm, R_v = g/(s*cm^4)
 
@@ -113,6 +153,10 @@ class LumpedParameter:
     def calculate_viscous_resistances(self):
         self.viscous_resistances = [] #List for viscous resistances
         CONST_TERM = 8*self.dyn_viscosity/np.pi #The constant term in the viscous resistance equation
+
+        multiplier_array = []
+        visc_diss_array = []
+        K_array = []
 
         #Resistance contribution of all the centerline points until and excluding the last point
         #The length (L) is half the distance from the last point to this point and half the distance from this point to the next
@@ -126,28 +170,38 @@ class LumpedParameter:
 
             #Getting the radius at this point
             rad = self.radius_array_np[i]
-
-            #Calculating the unsteady term - zeta
-            unsteady_term = rad * np.sqrt(self.density / self.dyn_viscosity)
             
             #Calculating the curvature term - gamma
             curv = self.curvature_array_np[i]
-            K_i = self.reynolds * np.sqrt(rad / curv)
-            curve_res_i = 0.1033 * np.sqrt(K_i) * ((1+(1.729 / K_i)) ** 0.5 - (1.315 - np.sqrt(K_i))) ** -3 #Multiplier to add the curvature resistance term
+            K_i = self.re_array[i] * np.sqrt(rad / curv)
+            K_array.append(K_i)
+            curve_res_i = 0.1033 * np.sqrt(K_i) * ((1+(1.729 / K_i)) ** 0.5 - (1.315 / np.sqrt(K_i))) ** -3 #Multiplier to add the curvature resistance term
             
             #The viscous resistance "multiplier" is the maximum of gamma and zeta
-            multiplier = max(curve_res_i, 1)
+            multiplier = max(curve_res_i, 1e-8)
+            multiplier_array.append(multiplier)
 
             #Calculate the viscous resistance at this centerline point
             visc_res = (CONST_TERM * L_i * multiplier) / (rad ** 4)
             self.viscous_resistances.append(visc_res)
+
+            #Calculate the pure viscous dissipation for the purpose of debugging
+            visc_diss = (CONST_TERM * L_i) / (rad ** 4)
+            visc_diss_array.append(visc_diss)
+
+        self.multiplier_array = multiplier_array
+        self.visc_dis_array = visc_diss_array
+        self.Ks_array = K_array
+        # print(f"Total Viscous Resistance: {sum(self.viscous_resistances)}")
+        # print(f"Average of the multipliers: {sum(multiplier_array)/len(multiplier_array):.10f}")
 
     '''
     Creating the arrays for the local minimum and local maximum indices
 
     Method used:
         - argrelextrema: Scipy method finding the local minimum/maximum
-            -order = 3: For each point, looks at the 3 points upstream and downstream to determine local maximum/minimum
+            -order = 3: For each point, looks at the 3 points upstream and downstream to determine local maximum/minimum.
+            Order gets reduced if there is a significant difference between the number of mins and maxs 
     
     Return:
         - minima_indices: Numpy array containing the indices for each of the local minimum
@@ -155,10 +209,22 @@ class LumpedParameter:
         - start_min: Boolean - True if there is a local minimium before a local maximum, False if local max before local min
     '''
     def create_min_max_array(self):
-        minima_indices = argrelextrema(self.radius_array_np, np.less, order=3)[0] #Gets the inidices of the local minima - order = 3 means that 3 points on each side used for comparison to reduce noise
-        maxima_indices = argrelextrema(self.radius_array_np, np.greater, order=3)[0]
-        #start_min = minima_indices[0] < maxima_indices[0] #True if the index of the first minima is less than the index of the first maxima
-        
+        accept = False
+        order = 1
+        while accept == False:
+            minima_indices = argrelextrema(self.radius_array_np, np.less, order=order)[0] #Gets the inidices of the local minima - order = 3 means that 3 points on each side used for comparison to reduce noise
+            maxima_indices = argrelextrema(self.radius_array_np, np.greater, order=order)[0]
+            #start_min = minima_indices[0] < maxima_indices[0] #True if the index of the first minima is less than the index of the first maxima
+
+            if abs(len(minima_indices) - len(maxima_indices)) < 2:
+                accept = True
+            else:
+                order -= 1
+                if order == 0:
+                    raise ValueError("Need to be able to handle subsequent extrema value being of the same type for this case to work.")
+
+        print(f"Min indices: {minima_indices}")
+        print(f"Max indices: {maxima_indices}")
         return minima_indices, maxima_indices
 
     '''
@@ -203,103 +269,64 @@ class LumpedParameter:
         #If the first element is a maximum, no issues
         #If it's a minimum
         if first == "min":
-            # A_0 = np.pi * self.radius_array_np[extrema_array[0]] ** 2
-            # A_s = np.pi * self.radius_array_np[extrema_array[1]] ** 2
             A_0 = self.area_array_np[extrema_array[0]]
-            A_s = np.pi * self.area_array_np[extrema_array[1]]
+            A_s = self.area_array_np[extrema_array[1]]
 
             delta_R = self.calculate_added_resistance(A_s, A_0)
-            exp_res_dict[min_indices[i]] = delta_R #C: i is undefined - i think it supposed to be 0
+            exp_res_dict[min_indices[0]] = delta_R
             expansion_resistance += delta_R
 
             #The first and last values aren't handled by the for loop
             for i in range(1, len(min_indices)-1):
                 extrema_i = np.where(extrema_array == min_indices[i])[0][0]
-                A_s = np.pi * self.radius_array_np[min_indices[i]] ** 2
-                A_0 = np.pi * ((self.radius_array_np[extrema_array[extrema_i-1]] + self.radius_array_np[extrema_array[extrema_i+1]]) / 2) ** 2
-                
+                A_s = self.area_array_np[min_indices[i]]
+                A_0 = (self.area_array_np[extrema_array[extrema_i-1]] + self.area_array_np[extrema_array[extrema_i+1]]) / 2
+                # print(f"For region {min_indices[i]} to {max_indices[i]}, A_s: {A_s}, A_0: {A_0}")
+                # print(f"For index {extrema_array[extrema_i-1]}, CSA: {self.area_array_np[extrema_array[extrema_i-1]]}")
+                # print(f"For index {extrema_array[extrema_i]}, CSA: {self.area_array_np[extrema_array[extrema_i]]}")
+                # print(f"For index {extrema_array[extrema_i+1]}, CSA: {self.area_array_np[extrema_array[extrema_i+1]]}")
                 delta_R = self.calculate_added_resistance(A_s, A_0)
+                # print(f'{extrema_array[extrema_i-1]} -> {min_indices[i]} -> {extrema_array[extrema_i+1]}: {delta_R}')
                 exp_res_dict[min_indices[i]] = delta_R
                 expansion_resistance += delta_R
             
-            if last == "min":
-                A_s = np.pi * self.radius_array_np[extrema_array[-1]] ** 2
-                A_0 = np.pi * self.radius_array_np[extrema_array[-2]] ** 2
-            else:
-                A_s = np.pi * self.radius_array_np[extrema_array[-2]] ** 2
-                A_0 = np.pi * ((self.radius_array_np[extrema_array[-3]] + self.radius_array_np[extrema_array[-1]]) / 2) ** 2
+            #Only have to deal with the last local extrema if it's a maximum. If it's a minimum, no expansion region.
+            if last == "max":
+                # print("Last is max")
+                A_s = self.area_array_np[extrema_array[-2]]
+                A_0 = (self.area_array_np[extrema_array[-3]] + self.area_array_np[extrema_array[-1]]) / 2
+                delta_R = self.calculate_added_resistance(A_s, A_0)
+                # print(f'{min_indices[-1]}: {delta_R}')
+                exp_res_dict[min_indices[i]] = delta_R
+                expansion_resistance += delta_R
             
-            delta_R = self.calculate_added_resistance(A_s, A_0)
-            exp_res_dict[min_indices[i]] = delta_R
-            expansion_resistance += delta_R
-        
         #If the first element is a maxima, need to treat a little differently
         else:
             for i in range(0, len(min_indices)-1):
                 extrema_i = np.where(extrema_array == min_indices[i])[0][0]
                 A_s = self.area_array_np[min_indices[i]]
                 A_0 = (self.area_array_np[extrema_array[extrema_i-1]] + self.area_array_np[extrema_array[extrema_i+1]]) / 2
-                #A_s = np.pi * self.radius_array_np[min_indices[i]] ** 2
-                #A_0 = np.pi * ((self.radius_array_np[extrema_array[extrema_i-1]] + self.radius_array_np[extrema_array[extrema_i+1]]) / 2) ** 2
+                # print(f"For region {max_indices[i]} to {min_indices[i]}, A_s: {A_s}, A_0: {A_0}")
                 
                 delta_R = self.calculate_added_resistance(A_s, A_0)
+                # print(f'{min_indices[i]}: {delta_R}')
                 exp_res_dict[min_indices[i]] = delta_R
                 expansion_resistance += delta_R
 
-            if last == "min":
-                A_s = self.area_array_np[extrema_array[-1]]
-                A_0 = self.area_array_np[extrema_array[-2]]
-                # A_s = np.pi * self.radius_array_np[extrema_array[-1]] ** 2
-                # A_0 = np.pi * self.radius_array_np[extrema_array[-2]] ** 2
-            else:
+            #Only having to deal with the last point if it's a maximum
+            if last == "max":
+                # print("Last element is a maximum")
                 A_s = self.area_array_np[extrema_array[-2]]
                 A_0 = (self.area_array_np[extrema_array[-3]] + self.area_array_np[extrema_array[-1]]) / 2
-                # A_s = np.pi * self.radius_array_np[extrema_array[-2]] ** 2
-                # A_0 = np.pi * ((self.radius_array_np[extrema_array[-3]] + self.radius_array_np[extrema_array[-1]]) / 2) ** 2
-            
-            delta_R = self.calculate_added_resistance(A_s, A_0)
-            exp_res_dict[min_indices[-1]] = delta_R
-            expansion_resistance += delta_R
+
+                delta_R = self.calculate_added_resistance(A_s, A_0)
+                # print(f'{min_indices[-1]}: {delta_R}')
+                exp_res_dict[min_indices[-1]] = delta_R
+                expansion_resistance += delta_R
 
         self.expansion_resistances = expansion_resistance
         self.exp_res_dict = exp_res_dict
-
-    '''
-    Linearly adding the expansion resistance from the start of the expansion region (local minimum) 
-    to the end (downstream local maximum)
-
-    Parameters:
-        - key: The id of the local minimum (index in lists)
-        - val: Total expansion resistance to be applied over the expansion region
-        - resistances: List of previously calculated resistance values for every point
-        - max_indices: List of the local maximum indices
-
-    Return:
-        - resistances: List of calculated resistance values for every point after expansion resistance added
-    '''
-    def add_linear_expansion_resistance(self, key, val, resistances, max_indices):
-        #Find the next maximum after this local minimum
-        next_max = max_indices[max_indices > key]
-        if len(next_max) == 0:
-            #If there is no downstream maximum - apply entirely at the minimum point
-            resistances[key] += val
-            return resistances
-        
-        next_max_idx = next_max[0]
-
-        #Points in the recovery region (inclusive of both endpoints)
-        region_indices = list(range(key, next_max_idx + 1))
-
-        #Equal share per point
-        r_per_point = val / len(region_indices)
-        for idx in region_indices:
-            #viscous resistances is offset by 1 (starts at centerline point 1)
-            res_idx = idx - 1
-            if 0 <= res_idx < len(self.viscous_resistances):
-                # self.viscous_resistances[res_idx] += r_per_point
-                resistances[res_idx] += r_per_point
-        
-        return resistances
+        # print(f'Total expansion resistance: {(expansion_resistance)}')
 
     '''
     Adding expansion resistance in the expansion resistance (from the local minimum to the downstream local maximum) 
@@ -318,6 +345,7 @@ class LumpedParameter:
         #Find the next maximum after this local minimum
         next_max = max_indices[max_indices > key]
         if len(next_max) == 0:
+            print(key)
             resistances[key] += val
             return resistances
         
@@ -369,7 +397,7 @@ class LumpedParameter:
             if idx == key:
                 weights.append(0.0)
             else:
-                delta_a = np.pi * (self.radius_array_np[idx] ** 2) - np.pi * (self.radius_array_np[idx - 1] ** 2)
+                delta_a = self.area_array_np[idx] - self.area_array_np[idx - 1]
                 weights.append(max(0.0, delta_a)) #Only positive growth counts
         
         total_weight = sum(weights)
@@ -399,21 +427,17 @@ class LumpedParameter:
 
         #Calculating Total resistance
         resistances = self.viscous_resistances.copy() #Viscous resistance term
-        if self.expansion == 2 or self.expansion == 3 or self.expansion == 4:
-            _, max_indices = self.create_min_max_array()
+        _, max_indices = self.create_min_max_array()
+
         #Adding expansion resistance
         for key, val in self.exp_res_dict.items():
             if self.expansion == 1:
-                resistances[key] += val
-            elif self.expansion == 2:
-                #Linear expansion resistance
-                resistances = self.add_linear_expansion_resistance(key, val, resistances, max_indices) #This doesn't return anything that is added to resistances. This won't work.
-            elif self.expansion == 3:
                 resistances = self.add_proportional_expansion_resistance(key, val, resistances, max_indices)
-            elif self.expansion == 4:
-                resistances = self.add_proportional_to_area_expansion_resisance(key, val, resistances, max_indices)
             else:
-                raise ValueError(f"EXPANSION flag must be set to a value between 0 and 4 inclusive. Not {self.expansion}")
+                resistances = self.add_proportional_to_area_expansion_resisance(key, val, resistances, max_indices)
+
+        self.total_resistances = resistances
+
         pressure_mmHg = self.flow_rate * resistances[0] / 1333.2
         for resistance in resistances:
             delta_P = self.flow_rate * resistance #Pressure drop over each segment due to the resistive elements in that segment
@@ -427,6 +451,7 @@ class LumpedParameter:
 
         self.visc_pressures_mmHg = []
         self.exp_pressures_mmHg = []
+        self.exp_resistances = []
         # visc_pressure = sum(self.viscous_resistances) * self.flow_rate / 1333.2
         # exp_pressure = sum(resistances) * self.flow_rate / 1333.2 - visc_pressure
         visc_pressure = 0
@@ -434,6 +459,7 @@ class LumpedParameter:
         for i in range(len(resistances)):
             visc_res = self.viscous_resistances[i]
             exp_res = resistances[i] - self.viscous_resistances[i]
+            self.exp_resistances.append(exp_res)
 
             dP_visc_mmHg = self.flow_rate * visc_res / 1333.22
             visc_pressure -= dP_visc_mmHg
@@ -463,6 +489,9 @@ class LumpedParameter:
             self.pressures_mmHg.append(pressure_mmHg)
             self.pressure_drops_mmHg.append(delta_P_mmHg)
         
+    '''
+    Generating plot tracking the pressure pressure drops due to different sources
+    '''
     def generate_pressure_drop_contributions_plots(self):
         # Create a figure with 1 row and 2 columns for side-by-side plots
         fig, ax = plt.subplots(figsize=(10, 6))
@@ -473,140 +502,261 @@ class LumpedParameter:
         # Slice the new pressure drop lists to match the length of x
         p_drop_visc = self.visc_pressures_mmHg[10:-10]
         p_drop_exp = self.exp_pressures_mmHg[10:-10]
+
+        #Curvature
+        dP_curv_array = np.array(self.viscous_resistances[10:-10]) - np.array(self.visc_dis_array[10:-10]) #Resistances just due to curvature
+        dP_curv_array = dP_curv_array * (self.flow_rate / 1333.2) #Getting the pressure drop due to curvature [mmHg]
         
-        # 
-        ax.plot(x, p_drop_visc, color='green', linewidth=2, label="Viscous Term")
-        ax.plot(x, p_drop_exp, color='blue', linewidth=2, label="Expansion Term")
+        #Viscous Dissipation
+        dP_visc_diss_array = np.array(self.visc_dis_array[10:-10])
+        dP_visc_diss_array = dP_visc_diss_array * (self.flow_rate / 1333.2)
+
+        curv_pressure_array = []
+        curv_pressure = 0
+        visc_diss_array = []
+        visc_diss = 0
+
+        for i in range(len(dP_curv_array)):
+            curv_pressure -= dP_curv_array[i]
+            curv_pressure_array.append(curv_pressure)
+
+            visc_diss -= dP_visc_diss_array[i]
+            visc_diss_array.append(visc_diss)
+
+        #Plotting 
+        ax.plot(x, p_drop_visc, color='green', linewidth=2, label="Viscous Dissipation + Curvature - R_vc")
+        ax.plot(x, p_drop_exp, color='blue', linewidth=2, label="Expansion - R_s")
+        ax.plot(x, curv_pressure_array, color='red', linewidth=2, label="Curvature - R_c")
+        ax.plot(x, visc_diss_array, color='purple', linewidth=2, label="Viscous Dissipation - R_v")
+        ax.plot(x, self.pressures_mmHg[10:-10], color='black', linewidth=2, label="Total Pressure")
 
         ax.set_xlabel("Length Along Centerline (cm)", fontsize=16)
         ax.set_ylabel("Pressure Drop (mmHg)", fontsize=16)
         ax.set_title("Viscous vs Expansion Pressure Drop in LPM", fontsize=20)
         ax.grid(True, linestyle='--', alpha=0.7)
-        ax.legend(fontsize=16)
+        ax.legend(fontsize=10)
         
         plt.tight_layout()
         
         # Save and show the figure
-        save_path = f"{self.figure_save_folder}/{self.debug_case_name}_pdrop_contributions_exp_{self.expansion}_curv_{self.curvature}.png"
+
+        output_dir = Path(self.figure_save_folder)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        save_path = f"{self.figure_save_folder}/{self.case_name}_pdrop_contributions_exp_{self.expansion}.png"
         plt.savefig(save_path, dpi=300)
         plt.show()
 
+
+    def get_cfd_data(self):
+        import config
+
+        with open("Gurnish_Data/Gurnish_Case_Data.pkl", "rb") as f:
+            zones_df = pickle.load(f)
+
+        case_name = config.dlp_cfd_case_name
+
+        x = zones_df[case_name]["dist"]
+        pcen = zones_df[case_name]["pcen"]
+        return x, pcen
+
+    def get_bernoulli_data(self):
+        import config
+        with open("Gurnish_Data/Gurnish_Case_Data.pkl", "rb") as f:
+            df = pickle.load(f)
+
+        case_name = config.dlp_cfd_case_name
+        x = df[case_name]["dist"]
+        pber = df[case_name]["pber"]
+        x_sten_idx = int(np.array(np.where(np.array(df[case_name]["diststen"] == 0)))[0][0])
+        return x, pber, x_sten_idx
+
     '''
-    Generating the plots of the pressures along the centerline and the pressure drops along the centerline
+    Pressure Drop Plots with all sources and the total and a separate plot for CSA
     '''
-    def generate_pressure_plots(self):
-        fig, ax1 = plt.subplots(figsize=(10,6))
-        # fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(7,12))
+    def generate_p_drop_contributions_w_csa(self):
+        fig, (ax1, ax2) = plt.subplots(2,1,figsize=(10,8))
+
+        # Using the same centerline slicing as your previous plots
         x = self.length_array[11:-11]
+        
+        # Slice the new pressure drop lists to match the length of x
+        p_drop_visc = self.visc_pressures_mmHg[10:-10]
+        p_drop_exp = self.exp_pressures_mmHg[10:-10]
 
-        #C: WHAT IS THIS?
-        #Loading Case C's extracted data
-        # case_c_df = pd.read_csv("../extracted_pressure_data/Case_C_individual.csv")
-        # cfd_x_cm = case_c_df["dist"]
-        # cfd_pressure = case_c_df["pcen"]
-        # cfd_bernoulli = case_c_df["pber"]
+        #Curvature
+        dP_curv_array = np.array(self.viscous_resistances[10:-10]) - np.array(self.visc_dis_array[10:-10]) #Resistances just due to curvature
+        dP_curv_array = dP_curv_array * (self.flow_rate / 1333.2) #Getting the pressure drop due to curvature [mmHg]
         
-        #Loading Rojin's data to compare against
-        # 2. Loading Hemodynamics CFD Data
-        # The CSV has a comment on the first row ("# Q_actual=5.5797 mL/s"), so we skip it.
-        csv_filepath = "/home/kabir/masters_files/CFD_Results/From_Rojin/PTSeg028_base_0p64_centerline_hemodynamics_Qin5.58mLs.csv" #C: WTF
-        hemo_df = pd.read_csv(csv_filepath, skiprows=1)
-        
-        # Clean up column names (removes the '# ' and any trailing spaces)
-        hemo_df.columns = [col.replace('#', '').strip() for col in hemo_df.columns]
-        
-        # Extract distance (mm) and pressure (mmHg)
-        cfd_x_mm = hemo_df['cl_dist_mm'] / 10.0 #THIS IS ACC CM
-        cfd_pressure_rojin = hemo_df['pressure_mmHg'] - hemo_df['pressure_mmHg'][1312]
+        #Viscous Dissipation
+        dP_visc_diss_array = np.array(self.visc_dis_array[10:-10])
+        dP_visc_diss_array = dP_visc_diss_array * (self.flow_rate / 1333.2)
 
-        # 3. Numerical Comparison (Interpolation)
-        # To compare point-by-point, interpolate the CFD pressure at your ROM x-coordinates.
-        # Note: numpy.interp requires the x-array to be strictly increasing, so we sort it first.
-        sort_idx = np.argsort(cfd_x_mm.values)
-        cfd_x_sorted = cfd_x_mm.values[sort_idx]
-        cfd_p_sorted = cfd_pressure_rojin.values[sort_idx]
-        
-        cfd_interp = np.interp(x, cfd_x_sorted, cfd_p_sorted)
-        mean_abs_error = np.mean(np.abs(self.pressure_drops_mmHg[10:-10] - cfd_interp))
+        curv_pressure_array = []
+        curv_pressure = 0
+        visc_diss_array = []
+        visc_diss = 0
+        for i in range(len(dP_curv_array)):
+            curv_pressure -= dP_curv_array[i]
+            curv_pressure_array.append(curv_pressure)
 
-        # Pressure along vessel
-        #ax1.scatter(x, self.pressures_mmHg[10:-10], c=colours, s=20)
-        ax1.plot(x, self.pressures_mmHg[10:-10] , color='red', linewidth=2, label="LPM")
-        #ax1.plot(cfd_x_cm, cfd_pressure, color="black", linewidth=1.5, label='3D CFD')
-        #ax1.plot(cfd_x_cm, cfd_bernoulli, color="blue", linewidth=1.5, linestyle="--", label="Bernoulli Data")
-        # Line for CFD Hemodynamics Data
-        ax1.plot(cfd_x_mm, cfd_pressure_rojin, color="black", linewidth=2, label='3D CFD')
+            visc_diss -= dP_visc_diss_array[i]
+            visc_diss_array.append(visc_diss)
+
+        x2, cfd_data = self.get_cfd_data()
+        x3 = self.length_array[1:-1]
+
+        # Slice the new pressure drop lists to match the length of x - dP
+        visc_delta_P = np.array(self.viscous_resistances.copy()) * self.flow_rate / 1333.2
+        exp_delta_P = np.array(self.exp_resistances) * self.flow_rate / 1333.2
+        
+        #Curvature - dP
+        dP_curv_array = np.array(self.viscous_resistances) - np.array(self.visc_dis_array) #Resistances just due to curvature
+        dP_curv_array = dP_curv_array * (self.flow_rate / 1333.2) #Getting the pressure drop due to curvature [mmHg]
+
+        #Viscous Dissipation - dP
+        dP_visc_diss_array = np.array(self.visc_dis_array)
+        dP_visc_diss_array = dP_visc_diss_array * (self.flow_rate / 1333.2)
+
+        #Total dP
+        dP_total = np.array(self.total_resistances)
+        dP_total = dP_total * (self.flow_rate / 1333.2)
+
+        #dP for CFD
+        dP_cfd_data_array = [0]
+        dP_cfd_data = cfd_data.copy()
+        for i in range(1, len(dP_cfd_data)):
+            dP_cfd_data_array.append(dP_cfd_data[i-1] - dP_cfd_data[i])
+
+        #Bernoulli
+        x4, pber, x_sten_idx = self.get_bernoulli_data()
+        dP_ber_data_array = [0]
+        for i in range(1, x_sten_idx+1):
+            i_back_dP = pber[i-1] - pber[i]
+            if i_back_dP >= -0.5:
+                dP_ber_data_array.append(pber[i-1] - pber[i])
+
+            else:
+                # dP_ber_data_array.append(pber[i-1] - pber[i])
+                break
+        x5 = x4[:len(dP_ber_data_array)]
+        # x5 = x4[:x_sten_idx+1]
+
+
+        #Plotting 
+        ax1.plot(x, p_drop_visc, color='green', linewidth=2, label="Viscous Dissipation + Curvature - R_vc")
+        ax1.plot(x, p_drop_exp, color='blue', linewidth=2, label="Expansion - R_s")
+        ax1.plot(x, curv_pressure_array, color='red', linewidth=2, label="Curvature - R_c")
+        ax1.plot(x, visc_diss_array, color='purple', linewidth=2, label="Viscous Dissipation - R_v")
+        ax1.plot(x, self.pressures_mmHg[10:-10], color='black', linewidth=1, label="Total Pressure")
+        ax1.plot(x2, cfd_data, color='black', linewidth=2, linestyle="--", label="CFD Pressure")
+        ax1.plot(x4, pber, color="Maroon", linewidth=1, label="Bernoulli")
+
         ax1.set_xlabel("Length Along Centerline (cm)", fontsize=16)
-        ax1.set_ylabel("Pressure (mmHg)", fontsize=16)
-        ax1.set_title("Pressure Along Segment", fontsize=20)
-        ax1.grid(True)
-        ax1.legend(fontsize=16)
-        print(self.pressures_mmHg[-10])
-        print((cfd_pressure_rojin[1]))
+        ax1.set_ylabel("Pressure Drop (mmHg)", fontsize=16)
+        ax1.set_title("Pressure Drop in LPM vs. CFD vs. Bernoulli", fontsize=20)
+        ax1.grid(True, linestyle='--', alpha=0.7)
+        ax1.legend(fontsize=10)
+        
+        # ax2.plot(x, self.area_array_np[11:-11], color="blue", linewidth=2)
+        # ax2.set_xlabel("Length Along Centerline [cm]", fontsize=10)
+        # ax2.set_ylabel("Cross Sectional Area (CSA) [cm^2]", fontsize=10)
+        #
+        ax2.plot(x3, visc_delta_P, color='green', linewidth=2, label="Viscous (Diss + Curv)")
+        ax2.plot(x3, exp_delta_P, color='blue', linewidth=2, label="Expansion")
+        ax2.plot(x3, dP_curv_array, color='red', linewidth=2, label="Pure Curvature")
+        ax2.plot(x3, dP_visc_diss_array, color="purple", linewidth=2, label="Viscous Dissipation")
+        ax2.plot(x3, dP_total, color='black', linewidth=1, label="Total")
+        ax2.plot(x2, dP_cfd_data_array, color='black', linewidth=2, linestyle="--", label="CFD Data")
+        ax2.plot(x5, dP_ber_data_array, color='Maroon', linewidth=1, label="Bernoulli")
+        ax2.tick_params(axis='y')
+        ax2.grid(True, linestyle='--', alpha=0.7)
 
-        # Pressure drops at each segment
-        # ax2.bar(x, self.pressure_drops_mmHg[10:-10], color="black", alpha=0.3)
-        # ax2.set_xlabel("Length Along Centerline (ccm)")
-        # ax2.set_ylabel("Pressure Drop (mmHg)")
-        # ax2.set_title("Pressure Drop at Each Point Along Vessel")
-        # ax2.grid(True, axis='y')
+        
+        ax2.set_xlabel("Length Along Centerline (cm)", fontsize=16)
+        ax2.set_ylabel("Pressure Drop (mmHg)", fontsize=16)
+
+        ax3 = ax2.twinx()
+        ax3.plot(x3, self.area_array_np[1:-1], color="pink", linewidth=1, label="CSA")
+        ax3.tick_params(axis='y')
+
+        ax3.set_ylabel("Cross Sectional Area [cm^2]")
+        ax2.set_title("Instantaneous Pressure Drops in LPM vs. CFD vs. Bernoulli", fontsize=20)
+        ax2.grid(True, linestyle='--', alpha=0.7)
+        ax2.legend(fontsize=10)
+
 
         plt.tight_layout()
-        plt.savefig(f"{self.figure_save_folder}/{self.debug_case_name}_pressure_results_exp_{self.expansion}_curv_{self.curvature}.png", dpi=300)
+        
+        # Save and show the figure
+
+        output_dir = Path(self.figure_save_folder)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        save_path = f"{self.figure_save_folder}/{self.case_name}_pdrop_contributions_exp_{self.expansion}_w_csa.png"
+        plt.savefig(save_path, dpi=300)
         plt.show()
 
-    def compare_distances(self, csv_path):
-        # 1. Load CSV and clean columns
-        hemo_df = pd.read_csv(csv_path, skiprows=1)
-        hemo_df.columns = [col.replace('#', '').strip() for col in hemo_df.columns]
-        
-        # 2. Convert CSV distance to cm to match self.length_array units
-        csv_dist_cm = hemo_df['cl_dist_mm'].values / 10.0
-        rom_dist_cm = self.length_array[::-1]
-        
-        # 3. Check for length mismatch
-        if len(csv_dist_cm) != len(rom_dist_cm):
-            print(f"Warning: Length mismatch! CSV: {len(csv_dist_cm)}, ROM: {len(rom_dist_cm)}")
-            # If they differ, you must use interpolation instead of element-wise subtraction
-            return None
 
-        # 4. Element-wise comparison
-        # Note: If self.length_array is [0...max] and CSV is [max...0], 
-        # you may need to reverse one: csv_dist_cm = csv_dist_cm[::-1]
-        diff = rom_dist_cm - csv_dist_cm
-        
-        # 5. Statistics
-        print(f"Mean Difference: {np.mean(np.abs(diff)):.4f} cm")
-        print(f"Max Difference: {np.max(np.abs(diff)):.4f} cm")
-        
-        # fig, ax = plt.subplots(figsize=(12,6))
+    def excel_values(self):
+        import pandas as pd
 
+        #0. Zero pad where necessary
+        self.multiplier_array = [None] + self.multiplier_array + [None]
+        self.Ks_array = [None] + self.Ks_array + [None]
+        self.visc_dis_array = [0] + self.visc_dis_array + [0]
+        self.viscous_resistances = [0] + self.viscous_resistances + [0]
+        self.exp_resistances = [None] + self.exp_resistances + [None]
+        self.total_resistances = [None] + self.total_resistances + [None]
+        self.pressure_drops_mmHg = [None] + self.pressure_drops_mmHg + [None]
+        self.pressures_mmHg = [None] + self.pressures_mmHg + [None]
+        density_array = np.full(len(self.seg_lens_array), self.density)
+        dyn_visc_array = np.full(len(self.seg_lens_array), self.dyn_viscosity)
+        Kt_array = np.full(len(self.seg_lens_array), self.Kt)
+        Q_array = np.full(len(self.seg_lens_array), self.flow_rate)
 
-    def debug(self, txt_file_name, desc):
-        text_lines = []
-        text_lines.append(f"\nDescription: {desc}\n")
-        if hasattr(self, "viscous_resistances"):
-            v_res_sum = sum(self.viscous_resistances)/1333.2
-            text_lines.append(f"Viscous Total Resistance (+Curvature if CURVATURE = 1): {v_res_sum}\n")
-            text_lines.append(f"Pressure drop due to viscous losses: {v_res_sum * self.flow_rate}\n")
-        if hasattr(self, "expansion_resistances"):
-            text_lines.append(f"Expansion Total Resistance: {self.expansion_resistances/1333.2}\n")
-            text_lines.append(f"Pressure drop due to expansion losses: {self.expansion_resistances * self.flow_rate / 1333.2}\n")
+        # 1. Organize your data into a dictionary
+        # This automatically handles the alignment of your data
+        data = {
+            "Point ID": np.arange(0, len(self.length_array)),
+            "Distance Along Centerline [cm]": self.length_array,
+            "Segment Length [cm]": self.seg_lens_array,
+            "D_h [cm]": self.hyd_dia_array_np,
+            "R_eff [cm]": np.sqrt(self.area_array_np / np.pi),
+            "CSA [cm^2]": self.area_array_np,
+            "Perimeter [cm]": self.perimeter_array_np,
+            "Radius of Curvature [cm]": self.curvature_array_np,
+            "gamma [-]": self.multiplier_array,
+            "K - Dean's number [-]": self.Ks_array,
+            "Re [-]": self.re_array,
+            "Viscous Dissipation Only (Eq.3) [g/(s*cm^4)]": self.visc_dis_array,
+            "Viscous Resistance w/ Curvature (Eq.6) - Viscous Dissipation Only (Eq.3) [g/(s*cm^4)]": np.array(self.viscous_resistances) - np.array(self.visc_dis_array),
+            "Expansion Resistance (R_s) [g/(s*cm^4)]": self.exp_resistances,
+            "Total Resistance (R) [g/(s*cm^4)]": self.total_resistances,
+            "Pressure Drop (delta_P) [mmHg]": self.pressure_drops_mmHg,
+            "Total Pressure Drop (P) [mmHg]": self.pressures_mmHg,
+            "Density [g/cm^3]": density_array,
+            "Dynamic Viscosity [Poise]": dyn_visc_array,
+            "Kt [-]": Kt_array,
+            "Inlet Flow Rate [mL/s]": Q_array
+        }
 
-        text_lines.append('\n')
+        # 2. Create the DataFrame
+        df = pd.DataFrame(data)
 
-        #Actually writing to the text file
-        folder = Path(txt_file_name).parent
-        folder.mkdir(parents=True, exist_ok=True) #Creates the folder if it doesn't exist already
-        with open(txt_file_name, "a") as f:
-            f.writelines(text_lines)
+        # 3. Export to Excel
+        excel_file_name = self.case_name
+        df.to_excel(f"{excel_file_name}.xlsx", index=False)
+        print(f"Excel file '{excel_file_name}.xlsx' has been generated.")
 
     '''
     Function to run everything in the correct order based on the parameter given during class initialization,
     to make this class easy to use.
     '''
     def run(self):
-        #C: ADD CHECKS TO ENSURE THAT THE PARAMETERS GIVEN ARE VALID
+
+        if self.expansion > 2:
+            raise ValueError("Expansion term value must be between 0 and 2")
 
         #Calculate viscous resistance
         self.calculate_viscous_resistances()
@@ -617,16 +767,11 @@ class LumpedParameter:
         else:
             self.calculate_expansion_resistances()
             self.calculate_pressures()
-
-        #Output to debug file if desired
-        if self.debug_bool:
-            desc = f"{'='*50}\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\t{self.debug_case_name}->\tEXPANSION = {self.expansion}\tCURVATURE = {self.curvature}"
-            self.debug(txt_file_name=self.debug_file_path, desc=desc)
         
-        # self.compare_distances("/home/kabir/masters_files/CFD_Results/From_Rojin/PTSeg028_base_0p64_centerline_hemodynamics_Qin5.58mLs.csv")
-        self.generate_pressure_plots()
-        self.generate_pressure_drop_contributions_plots()
-        # self.compare_hemodynamics_pressure("/home/kabir/masters_files/CFD_Results/From_Rojin/PTSeg028_base_0p64_centerline_hemodynamics_Qin5.58mLs.csv")
+        # self.generate_pressure_drop_contributions_plots()
+        self.generate_p_drop_contributions_w_csa()
+
+        # self.excel_values()
 
 def main():
     try:
@@ -635,19 +780,21 @@ def main():
         INLET_FLOW_RATE = config.dlp_inlet_flow_rate
         KT = config.dlp_kt
         DENSITY = config.dlp_density
-        REYNOLDS_NUMBER = config.dlp_reynolds_number
 
         EXPANSION = config.dlp_exp_term 
-        CURVATURE = config.dlp_curv_term
+        try:
+            INLET_POINT_IDX = config.dlp_inlet_point_idx
+        except:
+            INLET_POINT_IDX = 0 #If the user doesn't set an inlet point id, then assuming that the inlet is labelled as the first point
 
         CLINE_FILE_PATH = config.dlp_cline_file_path
         FIGURE_SAVE_FOLDER = config.dlp_fig_save_folder
-        if config.dlp_debug:
-            debug_options = [config.dlp_debug_file_path, config.dlp_debug_case_name]
-        else:
-            debug_options = None
+        CASE_NAME = config.dlp_case_name
+
+        
+        
     except Exception as e:
-        raise Exception(f"Please ensure that the config.py file is present in the same folder as this file and all the necessary variables are present:\n{e}")
+        raise Exception(f"Please ensure that the config.py file is present in the same folder as this file and all the necessary variables are present: \n{e}")
 
     lp = LumpedParameter(
         cline_file=CLINE_FILE_PATH,
@@ -655,11 +802,11 @@ def main():
         rho=DENSITY,
         Kt=KT,
         mu=BLOOD_DYNAMIC_VISCOSITY,
-        re=REYNOLDS_NUMBER,
-        curv=CURVATURE,
         exp=EXPANSION,
         fig_save_folder=FIGURE_SAVE_FOLDER,
-        debug_options=debug_options
+        case_name=CASE_NAME,
+
+        inlet_point_idx=INLET_POINT_IDX
     )
 
     lp.run()

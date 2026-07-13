@@ -65,7 +65,8 @@ def cross_section_metrics(mesh: pv.PolyData, origin:np.ndarray, normal:np.ndarra
 
     area = solid_slice.area
     Dh = 4.0 * area / perimeter if perimeter > 1e-12 else 0.0
-
+    if Dh == None: 
+        print(f'Dh is None. Other values: Area - {area}, perimeter - {perimeter}')
     return area, perimeter, Dh, closest_slc, solid_slice
 
 def validate_csv(csv_path: str, vtp_path: str):
@@ -125,8 +126,8 @@ def main():
             raise FileNotFoundError("Could not find STL file. Please enter valid path")
         if not os.path.exists(VTP):
             raise FileNotFoundError("Could not find VTP centerline file. Please enter valid path")
-    except:
-        raise FileNotFoundError("Could not find config.py file in the same directory as this file. Please ensure the file present and the variables all have valud paths and re-run this script.")
+    except Exception as e:
+        raise Exception(f"Ran into an error getting file path from config file: {e}")
 
     SKIP = 1
     NO_PROGRESS = False
@@ -166,7 +167,7 @@ def main():
             print(f'Progress:{pct:5.1f}% point {i}/{n_total}', end="\r", flush=True) #Updating the progress tracker every 5%
 
         area, perimeter, Dh, outline, solid_slice = cross_section_metrics(mesh, points[i], tangents[i])
-        Dh_misr_ratio = Dh / misr[i] if misr[i] != 0 else 0.0
+        Dh_misr_ratio = Dh / (2*misr[i]) if misr[i] != 0 else 0.0
 
         if area is None:
             skipped += 1
@@ -198,7 +199,7 @@ def main():
             "area": area,
             "perimeter": perimeter,
             "hydraulic_diameter": Dh,
-            "Dh_MISR_Ratio": Dh_misr_ratio
+            "Dh_2*MISR_Ratio": Dh_misr_ratio
         })
 
     print()

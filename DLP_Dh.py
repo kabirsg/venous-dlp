@@ -167,7 +167,11 @@ class LumpedParameter:
             forward_L = self.length_array[i+1] - self.length_array[i]
             #Calculate the length of the segment for this centerline point
             L_i = back_L/2 + forward_L/2
-
+            
+            '''
+            Change for the backwards method 
+            '''
+            L_i = back_L
             #Getting the radius at this point
             rad = self.radius_array_np[i]
             
@@ -223,8 +227,6 @@ class LumpedParameter:
                 if order == 0:
                     raise ValueError("Need to be able to handle subsequent extrema value being of the same type for this case to work.")
 
-        print(f"Min indices: {minima_indices}")
-        print(f"Max indices: {maxima_indices}")
         return minima_indices, maxima_indices
 
     '''
@@ -260,7 +262,7 @@ class LumpedParameter:
     def calculate_expansion_resistances(self):
         min_indices, max_indices = self.create_min_max_array()
         #List of the local min, max, min, max, etc. This works because they are always going to alternate min, max, etc.
-        extrema_array = np.sort(np.concatenate((min_indices, max_indices))) 
+        extrema_array = np.sort(np.concatenate((min_indices, max_indices)))
         exp_res_dict = {} #Empty for now - Eventually, Index : expansion pressure drop
         expansion_resistance = 0.0
         first = "min" if extrema_array[0] == min_indices[0] else "max"
@@ -345,7 +347,6 @@ class LumpedParameter:
         #Find the next maximum after this local minimum
         next_max = max_indices[max_indices > key]
         if len(next_max) == 0:
-            print(key)
             resistances[key] += val
             return resistances
         
@@ -370,14 +371,16 @@ class LumpedParameter:
             for idx in region_indices:
                 res_idx = idx - 1
                 if 0 <= res_idx < len(self.viscous_resistances):
-                    resistances[res_idx] += r_per_point
+                    resistances[res_idx] = r_per_point
             
         else:
             for idx, w in zip(region_indices, weights):
                 res_idx = idx - 1
                 if 0 <= res_idx < len(self.viscous_resistances):
+                    # print(f"At point: {res_idx}\tStarting resistance: {resistances[res_idx]}")
                     resistances[res_idx] += val * (w/total_weight)
-        
+                    # print(f"Final Resistance: {resistances[res_idx]}")
+
         return resistances
     
     def add_proportional_to_area_expansion_resisance(self, key, val, resistances, max_indices):
@@ -419,6 +422,30 @@ class LumpedParameter:
         return resistances
 
     '''
+    Distributes the expansion losses in the post-stenotic expansion region proportional to the inverse of the radius.
+    Note: This function applies loss AT the stenotic point as well as after, unlike the other distribution functions above.
+    '''
+    def add_exp_res_proportional_to_inverse_radius(self, min_idx, val, resistances, max_indices):
+        #Find the next maximum after this local minimum
+        next_max = max_indices[max_indices > min_idx]
+        if len(next_max) == 0:
+            resistances[min_idx] += val
+            return resistances
+        
+        next_max_idx = next_max[0]
+
+        #Compute radius increase at each step in the region
+        #Weight at point i = inverse to the proportion of the total "radius" at that particular point
+        total_weight = sum(self.radius_array_np[min_idx:next_max_idx])
+        for i in range(min_idx, next_max_idx+1):
+            weight = self.radius_array_np[i] / total_weight
+            resistances[i] += (val * weight)
+
+        print(sum(resistances))
+        return resistances
+
+
+    '''
     Calculating the pressure drop at every point from the calculated resistance values
     '''
     def calculate_pressures(self):
@@ -433,8 +460,10 @@ class LumpedParameter:
         for key, val in self.exp_res_dict.items():
             if self.expansion == 1:
                 resistances = self.add_proportional_expansion_resistance(key, val, resistances, max_indices)
-            else:
+            elif self.expansion == 2:
                 resistances = self.add_proportional_to_area_expansion_resisance(key, val, resistances, max_indices)
+            else:
+                resistances = self.add_exp_res_proportional_to_inverse_radius(key, val, resistances, max_indices)
 
         self.total_resistances = resistances
 
@@ -547,7 +576,6 @@ class LumpedParameter:
         plt.savefig(save_path, dpi=300)
         plt.show()
 
-
     def get_cfd_data(self):
         import config
 
@@ -574,9 +602,7 @@ class LumpedParameter:
     '''
     Pressure Drop Plots with all sources and the total and a separate plot for CSA
     '''
-    def generate_p_drop_contributions_w_csa(self):
-        fig, (ax1, ax2) = plt.subplots(2,1,figsize=(10,8))
-
+    def plot_p_drops(self):
         # Using the same centerline slicing as your previous plots
         x = self.length_array[11:-11]
         
@@ -608,7 +634,7 @@ class LumpedParameter:
 
         # Slice the new pressure drop lists to match the length of x - dP
         visc_delta_P = np.array(self.viscous_resistances.copy()) * self.flow_rate / 1333.2
-        exp_delta_P = np.array(self.exp_resistances) * self.flow_rate / 1333.2
+        dP_exp_array = np.array(self.exp_resistances) * self.flow_rate / 1333.2
         
         #Curvature - dP
         dP_curv_array = np.array(self.viscous_resistances) - np.array(self.visc_dis_array) #Resistances just due to curvature
@@ -640,67 +666,153 @@ class LumpedParameter:
                 # dP_ber_data_array.append(pber[i-1] - pber[i])
                 break
         x5 = x4[:len(dP_ber_data_array)]
-        # x5 = x4[:x_sten_idx+1]
 
+        dP_dict = {
+            "x": x3,
+            "Viscous Dissipation": dP_visc_diss_array,
+            "Curvature": dP_curv_array,
+            "Expansion": dP_exp_array,
+            "Total": dP_total
+        }
+        bar_y = self.get_bar_plot_data(dP_dict)
 
-        #Plotting 
-        ax1.plot(x, p_drop_visc, color='green', linewidth=2, label="Viscous Dissipation + Curvature - R_vc")
+        ############
+        # Plotting #
+        # ########## 
+        fig, (ax1, ax2, ax3) = plt.subplots(3,1,figsize=(13,8))
+
+        # ax1.plot(x, p_drop_visc, color='green', linewidth=2, label="Viscous Dissipation + Curvature - R_vc")
         ax1.plot(x, p_drop_exp, color='blue', linewidth=2, label="Expansion - R_s")
-        ax1.plot(x, curv_pressure_array, color='red', linewidth=2, label="Curvature - R_c")
-        ax1.plot(x, visc_diss_array, color='purple', linewidth=2, label="Viscous Dissipation - R_v")
+        ax1.plot(x, curv_pressure_array, color='green', linewidth=2, label="Curvature - R_c")
+        ax1.plot(x, visc_diss_array, color='red', linewidth=2, label="Viscous Dissipation - R_v")
         ax1.plot(x, self.pressures_mmHg[10:-10], color='black', linewidth=1, label="Total Pressure")
         ax1.plot(x2, cfd_data, color='black', linewidth=2, linestyle="--", label="CFD Pressure")
-        ax1.plot(x4, pber, color="Maroon", linewidth=1, label="Bernoulli")
+        ax1.plot(x4, pber, color="purple", linewidth=1, label="Bernoulli")
 
-        ax1.set_xlabel("Length Along Centerline (cm)", fontsize=16)
-        ax1.set_ylabel("Pressure Drop (mmHg)", fontsize=16)
-        ax1.set_title("Pressure Drop in LPM vs. CFD vs. Bernoulli", fontsize=20)
+        #CSA on twin axis
+        ax1b = ax1.twinx()
+        ax1b.plot(x3, self.area_array_np[1:-1], color="pink", linewidth=1, label="CSA")
+        ax1b.tick_params(axis='y')
+        ax1b.set_ylabel("Cross Sectional Area [cm^2]")
+
+        # ax1.set_xlabel("Length Along Centerline (cm)")
+        ax1.set_ylabel("Pressure Drop (mmHg)")
+        ax1.set_title("Pressure Drop in LPM vs. CFD vs. Bernoulli", fontsize=16)
         ax1.grid(True, linestyle='--', alpha=0.7)
-        ax1.legend(fontsize=10)
+        ax1.set_xlim(min(x3), max(x3))
+        
+        lines1, labels1 = ax1.get_legend_handles_labels()
+        lines2, labels2 = ax1b.get_legend_handles_labels()
+        ax1.legend(lines1 + lines2, labels1 + labels2, fontsize=10)
         
         # ax2.plot(x, self.area_array_np[11:-11], color="blue", linewidth=2)
         # ax2.set_xlabel("Length Along Centerline [cm]", fontsize=10)
         # ax2.set_ylabel("Cross Sectional Area (CSA) [cm^2]", fontsize=10)
         #
-        ax2.plot(x3, visc_delta_P, color='green', linewidth=2, label="Viscous (Diss + Curv)")
-        ax2.plot(x3, exp_delta_P, color='blue', linewidth=2, label="Expansion")
-        ax2.plot(x3, dP_curv_array, color='red', linewidth=2, label="Pure Curvature")
-        ax2.plot(x3, dP_visc_diss_array, color="purple", linewidth=2, label="Viscous Dissipation")
-        ax2.plot(x3, dP_total, color='black', linewidth=1, label="Total")
-        ax2.plot(x2, dP_cfd_data_array, color='black', linewidth=2, linestyle="--", label="CFD Data")
-        ax2.plot(x5, dP_ber_data_array, color='Maroon', linewidth=1, label="Bernoulli")
+        # ax2.plot(x3, visc_delta_P, color='green', linewidth=2, label="Viscous (Diss + Curv)")
+        ax2.plot(x3, dP_exp_array, color='blue', linewidth=2)
+        ax2.plot(x3, dP_curv_array, color='green', linewidth=2)
+        ax2.plot(x3, dP_visc_diss_array, color="red", linewidth=2)
+        ax2.plot(x3, dP_total, color='black', linewidth=1)
+        ax2.plot(x2, dP_cfd_data_array, color='black', linewidth=2, linestyle="--")
+        ax2.plot(x5, dP_ber_data_array, color='purple', linewidth=1)
         ax2.tick_params(axis='y')
         ax2.grid(True, linestyle='--', alpha=0.7)
+        ax2.set_xlim(min(x3), max(x3))
 
-        
-        ax2.set_xlabel("Length Along Centerline (cm)", fontsize=16)
-        ax2.set_ylabel("Pressure Drop (mmHg)", fontsize=16)
+        # ax2.set_xlabel("Length Along Centerline (cm)")
+        ax2.set_ylabel("Pressure Drop (mmHg)")
 
-        ax3 = ax2.twinx()
-        ax3.plot(x3, self.area_array_np[1:-1], color="pink", linewidth=1, label="CSA")
-        ax3.tick_params(axis='y')
+        ax2b = ax2.twinx()
+        ax2b.plot(x3, self.area_array_np[1:-1], color="pink", linewidth=1, label="CSA")
+        ax2b.tick_params(axis='y')
 
-        ax3.set_ylabel("Cross Sectional Area [cm^2]")
-        ax2.set_title("Instantaneous Pressure Drops in LPM vs. CFD vs. Bernoulli", fontsize=20)
+        ax2b.set_ylabel("Cross Sectional Area [cm^2]")
+        ax2.set_title("Instantaneous Pressure Drops in LPM vs. CFD vs. Bernoulli", fontsize=16)
         ax2.grid(True, linestyle='--', alpha=0.7)
-        ax2.legend(fontsize=10)
 
+        ax3.stackplot(x3, bar_y, labels=['I', 'II', 'III'], colors=['red', 'green', 'blue'])
+        ax3.set_ylim(0, 100)
+        ax3.set_xlim(min(x3), max(x3))
+        ax3.set_ylabel("% of Pressure Drop")
+        ax3.set_xlabel("Length Along Centerline (cm)")
+        ax3.set_title("Proportion of Pressure Drop due to Different Contributions for Each Point", fontsize=16)
+
+        ax3b = ax3.twinx()
+        ax3b.plot(x3, self.area_array_np[1:-1], color="pink", linewidth=1, label="CSA")
+        ax3b.tick_params(axis='y')
+        ax3b.set_ylabel("Cross Sectional Area [cm^2]")
 
         plt.tight_layout()
         
         # Save and show the figure
-
         output_dir = Path(self.figure_save_folder)
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        save_path = f"{self.figure_save_folder}/{self.case_name}_pdrop_contributions_exp_{self.expansion}_w_csa.png"
+        save_path = f"{self.figure_save_folder}/{self.case_name}_pdrop_w_bar_exp_{self.expansion}_Dh.png"
         plt.savefig(save_path, dpi=300)
         plt.show()
 
+    def get_bar_plot_data(self, dP_dict):
+        x = dP_dict["x"]
+        v = dP_dict["Viscous Dissipation"]
+        c = dP_dict["Curvature"]
+        e = dP_dict["Expansion"]
+
+        #Lists containing each loss as a percentage of the total
+        v_p = []
+        c_p = []
+        e_p = []
+
+        for i in range(len(x)):
+            total_i = v[i] + c[i] + e[i]
+            v_p.append(v[i] * 100 / total_i)
+            c_p.append(c[i] * 100 / total_i)
+            e_p.append(e[i] * 100 / total_i)
+
+        v_p = np.array(v_p)
+        c_p = np.array(c_p)
+        e_p = np.array(e_p)
+
+        return [v_p, c_p, e_p]
+
+    # def bar_plot_v2(self, dP_dict):
+    #     x_vals = dP_dict["x"]
+    #     x = np.array(range(len(x_vals)))
+    #     v = dP_dict["Viscous Dissipation"]
+    #     c = dP_dict["Curvature"]
+    #     e = dP_dict["Expansion"]
+
+    #     #Lists containing each loss as a percentage of the total
+    #     v_p = []
+    #     c_p = []
+    #     e_p = []
+
+    #     for i in range(len(x)):
+    #         total_i = v[i] + c[i] + e[i]
+    #         v_p.append(v[i] * 100 / total_i)
+    #         c_p.append(c[i] * 100 / total_i)
+    #         e_p.append(e[i] * 100 / total_i)
+
+    #     y = [v_p, c_p, e_p]
+
+    #     fig, ax = plt.subplots(figsize=(10, 8))
+    #     ax.stackplot(x, y, labels=['I', 'II', 'III'], colors=['red', 'green', 'blue'])
+
+    #     ax.set_ylim(0, 100)
+    #     ax.set_xlim(min(x), max(x))
+
+    #     ax2 = ax.twinx()
+    #     ax2.plot(x, self.area_array_np[1:-1], color="white", linewidth=1, label="CSA")
+    #     ax2.tick_params(axis='y')
+    #     ax2.set_ylabel("Cross Sectional Area [cm^2]")
+
+    #     save_path = f"{self.figure_save_folder}/{self.case_name}_bar_plot_v2_exp_{self.expansion}.png"
+    #     plt.savefig(save_path, dpi=300)
+    #     plt.show()
+
 
     def excel_values(self):
-        import pandas as pd
-
         #0. Zero pad where necessary
         self.multiplier_array = [None] + self.multiplier_array + [None]
         self.Ks_array = [None] + self.Ks_array + [None]
@@ -755,8 +867,8 @@ class LumpedParameter:
     '''
     def run(self):
 
-        if self.expansion > 2:
-            raise ValueError("Expansion term value must be between 0 and 2")
+        if self.expansion > 3:
+            raise ValueError("Expansion term value must be between 1 and 3")
 
         #Calculate viscous resistance
         self.calculate_viscous_resistances()
@@ -769,9 +881,9 @@ class LumpedParameter:
             self.calculate_pressures()
         
         # self.generate_pressure_drop_contributions_plots()
-        self.generate_p_drop_contributions_w_csa()
+        self.plot_p_drops()
 
-        # self.excel_values()
+        self.excel_values()
 
 def main():
     try:

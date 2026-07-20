@@ -29,3 +29,12 @@ Usage of hydraulic diameter, area, and perimeter calculation script:
 Usage of visualization.py:
 1. Set file paths in config.py file
 2. Run `python visualization.py`
+
+The differences between DLP scripts within this repository, with each building on the last:  
+
+| File | Description of Changes |
+|:----|:----|
+| **DLP.py:** | <ul><li>First attempt at the simple DLP (not used anymore)| 
+| **DLP_Dh.py:** | <ul><li>Uses hydraulic diameter for calculations and adds the curvature term - requires the hydraulic diameter script to be run beforehand | 
+| **DLP_v3.py:** | <ul><li>uses a different method for finding the local mins and maxes <li>only has linear distribution for the expansion resistances within the expansion region <li>discretizes the vessel in a backwards method so the length segment for point i is the distance between points i and i-1. |
+| **DLP_v4.py:** | <ul><li>changes curvature calculation from using instantaneous curvature on a point-by-point basis to a rolling average approach for curvature |

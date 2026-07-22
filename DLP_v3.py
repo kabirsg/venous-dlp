@@ -126,9 +126,19 @@ class LumpedParameterModel():
         all_indices.sort()
 
         regions = [] #List of lists containing the expansion regions (by index)
-        curr_region = [] #List 
-        #iterating over every point from the first minimum to the last maximum
-        for i in range(minima_indices[0], maxima_indices[-1]):
+        curr_region = [] #List that will contain two elements: Min and maximum for the stenotic region
+        first_max = 0 #Keeps track of where the first local maximum is
+
+        #Error checking
+        if minima_indices[0] > maxima_indices[-1]:
+            print("WARNING: NO EXPANSION REGION - CONTINUING AS NORMAL AND HOPING FOR THE BEST (THIS IS UNTESTED BEHAVIOUR)")
+            return [[]]
+
+        if maxima_indices[0] < minima_indices[0]:
+            first_max = maxima_indices[0]
+
+        #Iterating over every extrema point from the first minimum to the last maximum
+        for i in range(minima_indices[0], maxima_indices[-1]+1):
             if i in maxima_indices:
                 if len(curr_region) == 1:
                     #Minimum added, adding maximum
@@ -147,7 +157,7 @@ class LumpedParameterModel():
                 #Not a maximum or minimum point
                 continue
 
-        return regions
+        return regions, first_max
         # return all_indices, first
 
     '''
@@ -208,7 +218,7 @@ class LumpedParameterModel():
         self.length_array = self.create_length_array()
         self.seg_lens_array = self.create_segments_array_backwards()
         self.re_array = self.create_reynolds_array()
-        self.expansion_regions = self.create_min_max_array()
+        self.expansion_regions, self.first_max = self.create_min_max_array()
         self.points_type_array = self.assign_point_types()
 
         #Reverses the centerline points if the inlets and outlets are inversed
@@ -329,7 +339,7 @@ class LumpedParameterModel():
         expansion_resistance = 0.0
 
         #Handle the first expansion region
-        A_0 = (self.area_array_np[0] + self.area_array_np[exp_regions[0][1]]) / 2 #First point and first maximum
+        A_0 = (self.area_array_np[self.first_max] + self.area_array_np[exp_regions[0][1]]) / 2 #First point and first maximum
         A_s = self.area_array_np[exp_regions[0][0]]
         delta_R =  self.calculate_added_resistance(A_s, A_0)
         exp_res_dict[exp_regions[0][0]] = delta_R

@@ -183,6 +183,33 @@ class LumpedParameterModel():
 
         return np.array(point_types)
     
+    '''
+    Computes a rollling average for the curvature values
+
+    Parameters:
+        - curvature_array:
+        - window_size: The number of points to average around for each point
+            defaults to 7, so 3 points before and after for each centerline point
+
+    Returns:
+        - result: Rolling averaged curvature array
+    '''
+    def average_curvature(self, curvature_array, window_size=7):
+        #Work on a copy
+        result = curvature_array.astype(float).copy()
+
+        #1. Compute rolling average for valid positions
+        weights = np.ones(window_size) / window_size
+        valid_avg = np.convolve(curvature_array, weights, mode="valid")
+
+        #2. Determine index offsets for left and right edges
+        left_offset = window_size // 2
+        right_offset = left_offset + len(valid_avg)
+
+        #3. Replace only the interior values
+        result[left_offset:right_offset] = valid_avg
+
+        return result
 
     '''
     Creating arrays for the other class functions to use
@@ -209,11 +236,16 @@ class LumpedParameterModel():
         #Uses the rolling average curvature - calculated in the hydraulic diameter script
         vtk_curvature = self.polydata.GetPointData().GetArray("AveragedCurvature") or self.polydata.GetPointData().GetArray("Curvature")
         if vtk_curvature is not None:
-            self.curvature_array_np = vtk_to_numpy(vtk_curvature) #Defaulting to instantaneous curvature from Geoemtry Tools
+            curvature_array_np = vtk_to_numpy(vtk_curvature) #Defaulting to instantaneous curvature from Geometry Tools
         else:
             raise ValueError("No Average Curvature or Curvature column found")
-        self.curvature_array_np *= 10 #Adjusting for units: 1/mm -> 1/cm
-        self.curvature_array_np = 1/self.curvature_array_np #Converting this to the radius of curvature. Units: cm. Note: Will print a warning if division by zero but will make value infinity and move on
+        curvature_array_np *= 10 #Adjusting for units: 1/mm -> 1/cm
+        if "AvgCurv" in self.case_name:
+            print("Using Averaged Curvature")
+            avg_curvs = self.average_curvature(curvature_array_np, window_size=3)
+            self.curvature_array_np = 1/avg_curvs
+        else:
+            self.curvature_array_np = 1/curvature_array_np #Converting this to the radius of curvature. Units: cm. Note: Will print a warning if division by zero but will make value infinity and move on
 
         self.length_array = self.create_length_array()
         self.seg_lens_array = self.create_segments_array_backwards()
@@ -494,8 +526,7 @@ class LumpedParameterModel():
         case_name = config.dlp_cfd_case_name
         x = df[case_name]["dist"]
         pber = df[case_name]["pber"]
-        x_sten_idx = int(np.array(np.where(np.array(df[case_name]["diststen"] == 0)))[0][0])
-        return x, pber, x_sten_idx
+        return x, pber
 
     '''
     Pressure Drop Plots with all sources and the total and a separate plot for CSA
@@ -553,17 +584,18 @@ class LumpedParameterModel():
             dP_cfd_data_array.append(dP_cfd_data[i-1] - dP_cfd_data[i])
 
         #Bernoulli
-        x4, pber, x_sten_idx = self.get_bernoulli_data()
+        x4, pber = self.get_bernoulli_data()
         dP_ber_data_array = [0]
-        for i in range(1, x_sten_idx+1):
+        count_1 = 0
+        count_2 = 0
+        for i in range(1, len(x4)):
             i_back_dP = pber[i-1] - pber[i]
             if i_back_dP >= -0.5:
-                dP_ber_data_array.append(pber[i-1] - pber[i])
-
+                dP_ber_data_array.append(i_back_dP)
+                count_1 += 1
             else:
-                # dP_ber_data_array.append(pber[i-1] - pber[i])
-                break
-        x5 = x4[:len(dP_ber_data_array)]
+                dP_ber_data_array.append(np.nan)
+                count_2 += 1
         
         dP_dict = {
             "x": x3,
@@ -613,7 +645,7 @@ class LumpedParameterModel():
         ax2.plot(x3, dP_visc_diss_array, color="red", linewidth=2)
         ax2.plot(x3, dP_total, color='black', linewidth=1)
         ax2.plot(x2, dP_cfd_data_array, color='black', linewidth=2, linestyle="--")
-        ax2.plot(x5, dP_ber_data_array, color='purple', linewidth=1)
+        ax2.plot(x4, dP_ber_data_array, color='purple', linewidth=1)
         ax2.tick_params(axis='y')
         ax2.grid(True, linestyle='--', alpha=0.7)
         ax2.set_xlim(min(x3), max(x3))

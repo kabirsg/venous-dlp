@@ -1,7 +1,6 @@
-import argparse 
-import sys 
 import numpy as np 
 import vtk
+from vtk.util.numpy_support import vtk_to_numpy
 vtk.vtkObject.GlobalWarningDisplayOff()
 import csv
 import pandas as pd
@@ -9,6 +8,19 @@ import pyvista as pv
 import numpy as np
 import os
 
+'''
+Loading the centerline and returning arrays for quantities that we need
+
+Parameter:
+    vtp_path: Given path to the centerline file
+
+Returns:
+    points: Array of the points
+    tangents: numpy array of the tangents for each point
+    misr: numpy array of the maximally inscribed sphere radius for each point
+    curvs: numpy array of the curvature values for each point
+    num_points: Integer of total number of centerline points for this case
+'''
 def load_centerline(vtp_path: str):
     #Using pyvista to load the centerline natively
     polydata = pv.read(vtp_path)
@@ -22,8 +34,12 @@ def load_centerline(vtp_path: str):
     if "MaximumInscribedSphereRadius" not in polydata.point_data:
         raise ValueError("No MaximumInscribedSphereRadius in VTP centerline file - run Geometry Tools first and retry")
     misr = np.array(polydata.point_data["MaximumInscribedSphereRadius"])
+
+    if "Curvature" not in polydata.point_data:
+        raise ValueError("No Curvature in VTP centerline file - run Geometry Tools first and retry")
+    curvs = np.array(polydata.point_data["Curvature"])
     
-    return points, tangents, misr, num_points
+    return points, tangents, misr, curvs, num_points
 
 def cross_section_metrics(mesh: pv.PolyData, origin:np.ndarray, normal:np.ndarray):
     normal = normal / (np.linalg.norm(normal) + 1e-15)
@@ -66,7 +82,7 @@ def cross_section_metrics(mesh: pv.PolyData, origin:np.ndarray, normal:np.ndarra
     area = solid_slice.area
     Dh = 4.0 * area / perimeter if perimeter > 1e-12 else 0.0
     if Dh == None: 
-        print(f'Dh is None. Other values: Area - {area}, perimeter - {perimeter}')
+        print(f'Dh is None. Other values: Area - {area}, perimeter - {perimeter} for point at origin {origin}')
     return area, perimeter, Dh, closest_slc, solid_slice
 
 def validate_csv(csv_path: str, vtp_path: str):
@@ -147,7 +163,7 @@ def main():
         raise ValueError("The STL mesh is not watertight (has open edges/faces). Please fix and re-run")
     
     print(f"Loading centerline: {VTP}...")
-    points, tangents, misr, n_total = load_centerline(VTP)
+    points, tangents, misr, curvs, n_total = load_centerline(VTP)
     print(f"Centerline points: {n_total:,}")
 
     indices = range(0, n_total, SKIP)
@@ -162,18 +178,20 @@ def main():
     c_ratios = np.full(n_total, np.nan)
 
     for count, i in enumerate(indices):
+        #Updating print statement with progress
         if not NO_PROGRESS and count % max(1, len(indices)//20) == 0:
             pct = 100 * count / max(1, len(indices))
             print(f'Progress:{pct:5.1f}% point {i}/{n_total}', end="\r", flush=True) #Updating the progress tracker every 5%
 
         area, perimeter, Dh, outline, solid_slice = cross_section_metrics(mesh, points[i], tangents[i])
-        Dh_misr_ratio = Dh / (2*misr[i]) if misr[i] != 0 else 0.0
 
         if area is None:
+            #If area was returned as None, it means there was an error so we are skipping the point
             skipped += 1
             skipped_pts.append(count)
             area = perimeter = Dh = float("nan")
         else:
+            Dh_misr_ratio = Dh / (2*misr[i]) if misr[i] != 0 else 0.0
             #Saving the output outline, planes, and centerline point files
             outline.save(os.path.join(VIZ_DIR, f"outline_{i:04d}.vtp"))
             solid_slice.save(os.path.join(VIZ_DIR, f"plane_{i:04d}.vtp"))

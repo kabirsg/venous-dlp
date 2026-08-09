@@ -1,10 +1,9 @@
-import numpy as np 
+import numpy as np
 import vtk
 from vtk.util.numpy_support import vtk_to_numpy
 from pathlib import Path
 import matplotlib.pyplot as plt
 from scipy.signal import argrelextrema
-from datetime import datetime
 import pandas as pd
 import pickle
 
@@ -19,7 +18,6 @@ class LumpedParameter:
         self.figure_save_folder = fig_save_folder
         self.inlet_point_idx = inlet_point_idx
         self.case_name = case_name
-
         self.no_visc_in_exp = True
 
         #Creating the polydata object
@@ -168,10 +166,6 @@ class LumpedParameter:
             #Calculate the length of the segment for this centerline point
             L_i = back_L/2 + forward_L/2
             
-            '''
-            Change for the backwards method 
-            '''
-            L_i = back_L
             #Getting the radius at this point
             rad = self.radius_array_np[i]
             
@@ -604,18 +598,18 @@ class LumpedParameter:
     '''
     def plot_p_drops(self):
         # Using the same centerline slicing as your previous plots
-        x = self.length_array[11:-11]
+        x = self.length_array[1:-1]
         
         # Slice the new pressure drop lists to match the length of x
-        p_drop_visc = self.visc_pressures_mmHg[10:-10]
-        p_drop_exp = self.exp_pressures_mmHg[10:-10]
+        p_drop_visc = self.visc_pressures_mmHg
+        p_drop_exp = self.exp_pressures_mmHg
 
         #Curvature
-        dP_curv_array = np.array(self.viscous_resistances[10:-10]) - np.array(self.visc_dis_array[10:-10]) #Resistances just due to curvature
+        dP_curv_array = np.array(self.viscous_resistances) - np.array(self.visc_dis_array) #Resistances just due to curvature
         dP_curv_array = dP_curv_array * (self.flow_rate / 1333.2) #Getting the pressure drop due to curvature [mmHg]
         
         #Viscous Dissipation
-        dP_visc_diss_array = np.array(self.visc_dis_array[10:-10])
+        dP_visc_diss_array = np.array(self.visc_dis_array)
         dP_visc_diss_array = dP_visc_diss_array * (self.flow_rate / 1333.2)
 
         curv_pressure_array = []
@@ -679,13 +673,13 @@ class LumpedParameter:
         ############
         # Plotting #
         # ########## 
-        fig, (ax1, ax2, ax3) = plt.subplots(3,1,figsize=(13,8))
+        fig, (ax1, ax2, ax3) = plt.subplots(3,1,figsize=(12,8), sharex=True, gridspec_kw={'height_ratios': [3,3,1]})
 
         # ax1.plot(x, p_drop_visc, color='green', linewidth=2, label="Viscous Dissipation + Curvature - R_vc")
         ax1.plot(x, p_drop_exp, color='blue', linewidth=2, label="Expansion - R_s")
         ax1.plot(x, curv_pressure_array, color='green', linewidth=2, label="Curvature - R_c")
         ax1.plot(x, visc_diss_array, color='red', linewidth=2, label="Viscous Dissipation - R_v")
-        ax1.plot(x, self.pressures_mmHg[10:-10], color='black', linewidth=1, label="Total Pressure")
+        ax1.plot(x, self.pressures_mmHg, color='black', linewidth=1, label="Total Pressure")
         ax1.plot(x2, cfd_data, color='black', linewidth=2, linestyle="--", label="CFD Pressure")
         ax1.plot(x4, pber, color="purple", linewidth=1, label="Bernoulli")
 
@@ -746,10 +740,10 @@ class LumpedParameter:
         plt.tight_layout()
         
         # Save and show the figure
-        output_dir = Path(self.figure_save_folder)
+        output_dir = Path(f"{self.figure_save_folder}/{self.case_name}_Dh")
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        save_path = f"{self.figure_save_folder}/{self.case_name}_pdrop_w_bar_exp_{self.expansion}_Dh.png"
+        save_path = f"{output_dir}/pdrop_w_bar_exp_{self.expansion}.png"
         plt.savefig(save_path, dpi=300)
         plt.show()
 
@@ -857,9 +851,9 @@ class LumpedParameter:
         df = pd.DataFrame(data)
 
         # 3. Export to Excel
-        excel_file_name = self.case_name
-        df.to_excel(f"{excel_file_name}.xlsx", index=False)
-        print(f"Excel file '{excel_file_name}.xlsx' has been generated.")
+        output_dir = Path(f"{self.figure_save_folder}/{self.case_name}_Dh")
+        df.to_excel(f"{output_dir}/{self.case_name}_Dh.xlsx", index=False)
+        print(f"Excel file '{self.case_name}.xlsx' has been generated and saved to the {output_dir} directory.")
 
     '''
     Function to run everything in the correct order based on the parameter given during class initialization,

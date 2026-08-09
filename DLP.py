@@ -19,9 +19,12 @@ class LumpedParameter:
         self.expansion = exp
         self.figure_save_folder = fig_save_folder
         
-        if debug_options:
+        if debug_options is not None:
             self.debug_file_path = debug_options[0]
             self.debug_case_name = debug_options[1]
+            self.debug_bool = True
+        else:
+            self.debug_bool = False
 
         #Creating the polydata object
         if not Path(self.centerline_file).exists(): 
@@ -40,14 +43,20 @@ class LumpedParameter:
         self.polydata = reader.GetOutput()
 
     '''
-    Code from Rojin to more accurately calculate the length array, given that the inlet and outlet is messed up
-    FIX: THIS SHOULDN'T HAVE A DEFAULT
+    Accurately calculate the length array, even if the inlets and outlets were not labelled correctly. 
+    If inlet is labelled correctly, don't provide parameter or inlet_point_id = 0
+    If non-branching vessel and the inlets and outlets are reversed then use inlet_point_id = -1. 
+    If inlet is a middle point, use inlet_point_id = ###
     '''
-    def create_length_array(self, inlet_point_id=1333):
+    def create_length_array(self, inlet_point_id=None):
         diffs = np.diff(self.point_array_np, axis=0)
         seg_lengths = np.linalg.norm(diffs, axis=1)
         cumulative = np.concatenate([[0.0], np.cumsum(seg_lengths)])
-        self.length_array = np.abs(cumulative - cumulative[inlet_point_id]) / 10
+        if inlet_point_id is None:
+            ref = cumulative[0]
+        else:
+            ref = cumulative[inlet_point_id]
+        self.length_array = np.abs(cumulative - ref) / 10
         return
 
     '''
@@ -60,14 +69,14 @@ class LumpedParameter:
     '''
     def create_arrays(self):
         self.radius_array_np = vtk_to_numpy(self.polydata.GetPointData().GetArray("MaximumInscribedSphereRadius"))
-        self.radius_array_np /= 10 #Adjusting for units: mm -> cm 
+        self.radius_array_np /= 10 #Adjusting for units: mm -> cm
         
         self.point_array_np = vtk_to_numpy(self.polydata.GetPoints().GetData())
     
         self.curvature_array_np = vtk_to_numpy(self.polydata.GetPointData().GetArray("Curvature"))
         self.curvature_array_np *= 10 #Adjusting for units: 1/mm -> 1/cm
         
-        self.create_length_array(inlet_point_id=1333) #C: Fix - this shouldn't be hardcoded or even needed
+        self.create_length_array(inlet_point_id=-1) #C: Fix - this shouldn't be hardcoded or even needed
 
         #This is needed because PTSeg028 has flipped inlets and outlets
         self.needs_flipping = True #C: This is weird I don't like this
@@ -134,6 +143,8 @@ class LumpedParameter:
             visc_res = (CONST_TERM * L_i * multiplier) / (rad ** 4)
             self.viscous_resistances.append(visc_res)
 
+        print(f"Total Viscous Resistance: {sum(self.viscous_resistances)}")
+
     '''
     Creating the arrays for the local minimum and local maximum indices
 
@@ -151,6 +162,11 @@ class LumpedParameter:
         maxima_indices = argrelextrema(self.radius_array_np, np.greater, order=3)[0]
         #start_min = minima_indices[0] < maxima_indices[0] #True if the index of the first minima is less than the index of the first maxima
         
+        print(f'Length of minima indices: {len(minima_indices)}')
+        print(f'Minima indices: {minima_indices}')
+        print(f'Length of maxima indices: {len(maxima_indices)}')
+        print(f'Maxima indices: {maxima_indices}')
+
         return minima_indices, maxima_indices
 
     '''
@@ -199,7 +215,7 @@ class LumpedParameter:
             A_s = np.pi * self.radius_array_np[extrema_array[1]] ** 2
 
             delta_R = self.calculate_added_resistance(A_s, A_0)
-            exp_res_dict[min_indices[i]] = delta_R #C: i is undefined - i think it supposed to be 0
+            exp_res_dict[min_indices[0]] = delta_R
             expansion_resistance += delta_R
 
             #The first and last values aren't handled by the for loop
@@ -229,8 +245,11 @@ class LumpedParameter:
                 extrema_i = np.where(extrema_array == min_indices[i])[0][0]
                 A_s = np.pi * self.radius_array_np[min_indices[i]] ** 2
                 A_0 = np.pi * ((self.radius_array_np[extrema_array[extrema_i-1]] + self.radius_array_np[extrema_array[extrema_i+1]]) / 2) ** 2
-                
+                print(f"For region {min_indices[i]} to {max_indices[i]}, A_s: {A_s}, A_0: {A_0}")
+
+
                 delta_R = self.calculate_added_resistance(A_s, A_0)
+                print(f'{min_indices[i]}: {delta_R}')
                 exp_res_dict[min_indices[i]] = delta_R
                 expansion_resistance += delta_R
 
@@ -238,15 +257,18 @@ class LumpedParameter:
                 A_s = np.pi * self.radius_array_np[extrema_array[-1]] ** 2
                 A_0 = np.pi * self.radius_array_np[extrema_array[-2]] ** 2
             else:
+                print("Last element is a maximum")
                 A_s = np.pi * self.radius_array_np[extrema_array[-2]] ** 2
                 A_0 = np.pi * ((self.radius_array_np[extrema_array[-3]] + self.radius_array_np[extrema_array[-1]]) / 2) ** 2
             
             delta_R = self.calculate_added_resistance(A_s, A_0)
+            print(f'{min_indices[-1]}: {delta_R}')
             exp_res_dict[min_indices[-1]] = delta_R
             expansion_resistance += delta_R
 
         self.expansion_resistances = expansion_resistance
         self.exp_res_dict = exp_res_dict
+        print(f'Total expansion resistance: {(expansion_resistance)}')
 
     '''
     Linearly adding the expansion resistance from the start of the expansion region (local minimum) 
@@ -383,21 +405,16 @@ class LumpedParameter:
 
         #Calculating Total resistance
         resistances = self.viscous_resistances.copy() #Viscous resistance term
-        if self.expansion == 2 or self.expansion == 3 or self.expansion == 4:
-            _, max_indices = self.create_min_max_array()
+        _, max_indices = self.create_min_max_array()
+        
         #Adding expansion resistance
         for key, val in self.exp_res_dict.items():
             if self.expansion == 1:
-                resistances[key] += val
-            elif self.expansion == 2:
-                #Linear expansion resistance
-                resistances = self.add_linear_expansion_resistance(key, val, resistances, max_indices) #This doesn't return anything that is added to resistances. This won't work.
-            elif self.expansion == 3:
                 resistances = self.add_proportional_expansion_resistance(key, val, resistances, max_indices)
-            elif self.expansion == 4:
+            elif self.expansion == 2:
                 resistances = self.add_proportional_to_area_expansion_resisance(key, val, resistances, max_indices)
             else:
-                raise ValueError(f"EXPANSION flag must be set to a value between 0 and 4 inclusive. Not {self.expansion}")
+                raise ValueError(f"EXPANSION flag must be set to either 1 or 2. Not {self.expansion}")
         pressure_mmHg = self.flow_rate * resistances[0] / 1333.2
         for resistance in resistances:
             delta_P = self.flow_rate * resistance #Pressure drop over each segment due to the resistive elements in that segment
@@ -484,10 +501,10 @@ class LumpedParameter:
         x = self.length_array[11:-11]
 
         #Loading Case C's extracted data
-        case_c_df = pd.read_csv("../extracted_pressure_data/Case_C_individual.csv")
-        cfd_x_cm = case_c_df["dist"]
-        cfd_pressure = case_c_df["pcen"]
-        cfd_bernoulli = case_c_df["pber"]
+        # case_c_df = pd.read_csv("../extracted_pressure_data/Case_C_individual.csv")
+        # cfd_x_cm = case_c_df["dist"]
+        # cfd_pressure = case_c_df["pcen"]
+        # cfd_bernoulli = case_c_df["pber"]
         
         #Loading Rojin's data to compare against
         # 2. Loading Hemodynamics CFD Data
@@ -499,7 +516,7 @@ class LumpedParameter:
         hemo_df.columns = [col.replace('#', '').strip() for col in hemo_df.columns]
         
         # Extract distance (mm) and pressure (mmHg)
-        cfd_x_mm = hemo_df['cl_dist_mm'] / 10.0 #THIS IS ACC CM
+        cfd_x_mm = hemo_df['cl_dist_mm'] / 10.0 #C: THIS IS ACC CM
         cfd_pressure_rojin = hemo_df['pressure_mmHg'] - hemo_df['pressure_mmHg'][1312]
 
         # 3. Numerical Comparison (Interpolation)
@@ -602,7 +619,7 @@ class LumpedParameter:
             self.calculate_pressures()
 
         #Output to debug file if desired
-        if self.debug:
+        if self.debug_bool:
             desc = f"{'='*50}\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\t{self.debug_case_name}->\tEXPANSION = {self.expansion}\tCURVATURE = {self.curvature}"
             self.debug(txt_file_name=self.debug_file_path, desc=desc)
         

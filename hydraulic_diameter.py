@@ -1,3 +1,25 @@
+'''
+Calculates metrics (not just hydraulic diameter)
+
+Inputs (from config.py file):
+- 
+-
+- 
+- 
+
+Outputs (created files):
+- if CREATE_EXCEL:
+    - Excel (.xlsx) file containing just point ID, CSA, and Perimeter
+- if CREATE_CSV:
+    - CSV (.csv) file containing all created data
+- if CREATE_VTP:
+    - VTP (.vtp) file containing all the same data that was in the given centerline file but adding:
+        - Cross Sectional Area
+        - Perimeter
+        - Hydraulic Diameter
+        - DH:MISR Ratio (MISR = Maximum Inscribed Sphere Radius)
+'''
+
 import numpy as np 
 import vtk
 from vtk.util.numpy_support import vtk_to_numpy
@@ -7,6 +29,7 @@ import pandas as pd
 import pyvista as pv
 import numpy as np
 import os
+from pathlib import Path
 
 '''
 Loading the centerline and returning arrays for quantities that we need
@@ -51,7 +74,7 @@ def cross_section_metrics(mesh: pv.PolyData, origin:np.ndarray, normal:np.ndarra
         return None, None, None, None, None
 
     if slc.n_points == 0:
-        #2D tangent plane does not intersect any triangles in STL file
+        #2D tangent plane does not intersect any triangles in MESH file
         return None, None, None, None, None
     
     #Extracting only the region closest to the centerline origin
@@ -84,6 +107,36 @@ def cross_section_metrics(mesh: pv.PolyData, origin:np.ndarray, normal:np.ndarra
     if Dh == None: 
         print(f'Dh is None. Other values: Area - {area}, perimeter - {perimeter} for point at origin {origin}')
     return area, perimeter, Dh, closest_slc, solid_slice
+
+def write_output_vtp(VTP, c_areas, c_perimeters, c_dhs, c_ratios):
+    #Loading centerline again to attach new data
+    out_centerline = pv.read(VTP)
+    #Adding new arrays to point data
+    out_centerline.point_data["CrossSectionArea"] = c_areas
+    out_centerline.point_data["CrossSectionPerimeter"] = c_perimeters
+    out_centerline.point_data["HydraulicDiameter"] = c_dhs
+    out_centerline.point_data["DhMISRRatio"] = c_ratios
+
+    OUT_VTP = VTP.replace(".vtp", "_with_metrics.vtp") #Creating file path for new vtp centerline file with metrics
+    out_centerline.save(OUT_VTP)
+    print(f"Saved updated centerline file with area, perimeter, and hydraulic diameter added to point data to: {OUT_VTP}")
+
+def create_excel_file(vtp_file_path, output_dir, c_areas, c_perimeters):
+    data = {
+        "Area": c_areas,
+        "Perimeter": c_perimeters
+    }
+
+    df = pd.DataFrame(data)
+
+    df.to_excel(output_dir, index=True) #Writing the DataFrame to the Excel file
+
+def write_csv(CSV, results):
+    fieldnames = list(results[0].keys())
+    with open(CSV, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(results)
 
 def validate_csv(csv_path: str, vtp_path: str):
     print("Validating created CSV file")
@@ -134,12 +187,13 @@ def validate_csv(csv_path: str, vtp_path: str):
 def main():
     try:
         import config
-        STL = config.hd_stl
+        MESH = config.hd_mesh
         VTP = config.hd_vtp
         CSV = config.hd_csv
         VIZ_DIR = config.hd_viz_dir
-        if not os.path.exists(STL):
-            raise FileNotFoundError("Could not find STL file. Please enter valid path")
+        EXCEL_OUTPUT = config.hd_excel_output_dir
+        if not os.path.exists(MESH):
+            raise FileNotFoundError("Could not find surface mesh file. Please enter valid path")
         if not os.path.exists(VTP):
             raise FileNotFoundError("Could not find VTP centerline file. Please enter valid path")
     except Exception as e:
@@ -147,20 +201,24 @@ def main():
 
     SKIP = 1
     NO_PROGRESS = False
+    SAVE_OUTLINES = False
+    CREATE_CSV = False
+    CREATE_EXCEL = False
 
-    print(f"Creating output directory (if it doesn't exist)")
-    os.makedirs(VIZ_DIR, exist_ok=True)
+    if SAVE_OUTLINES:
+        print(f"Creating output directory (if it doesn't exist)")
+        os.makedirs(VIZ_DIR, exist_ok=True)
 
-    print(f"Loading mesh: {STL}...")
-    mesh = pv.read(STL)
+    print(f"Loading mesh: {MESH}...")
+    mesh = pv.read(MESH)
 
     #Pyvista watertightness check
     edges = mesh.extract_feature_edges(boundary_edges=True, non_manifold_edges=True, feature_edges=False, manifold_edges=False)
     is_watertight = (edges.n_points == 0)
 
     print(f"  Vertices: {mesh.n_points:,}\tFaces: {mesh.n_cells:,}\tWatertight: {is_watertight}")
-    if not is_watertight and STL.endswith(".stl"):
-        raise ValueError("The STL mesh is not watertight (has open edges/faces). Please fix and re-run")
+    if not is_watertight and MESH.endswith(".stl") or MESH.endswith(".vtu"):
+        raise ValueError("The mesh is not watertight (has open edges/faces). Please fix and re-run")
     
     print(f"Loading centerline: {VTP}...")
     points, tangents, misr, curvs, n_total = load_centerline(VTP)
@@ -193,61 +251,51 @@ def main():
         else:
             Dh_misr_ratio = Dh / (2*misr[i]) if misr[i] != 0 else 0.0
             #Saving the output outline, planes, and centerline point files
-            outline.save(os.path.join(VIZ_DIR, f"outline_{i:04d}.vtp"))
-            solid_slice.save(os.path.join(VIZ_DIR, f"plane_{i:04d}.vtp"))
-            cline_pt = pv.PolyData(points[i])
-            cline_pt.save(os.path.join(VIZ_DIR, f"centerline_point_{i:04d}.vtp"))
+            if SAVE_OUTLINES:
+                outline.save(os.path.join(VIZ_DIR, f"outline_{i:04d}.vtp"))
+                solid_slice.save(os.path.join(VIZ_DIR, f"plane_{i:04d}.vtp"))
+                cline_pt = pv.PolyData(points[i])
+                cline_pt.save(os.path.join(VIZ_DIR, f"centerline_point_{i:04d}.vtp"))
 
             #Storing calculated metrices into arrays
             c_areas[i] = area
             c_perimeters[i] = perimeter
             c_dhs[i] = Dh
             c_ratios[i] = Dh_misr_ratio
-        
-        #Appending to the results array for putting into the csv file
-        results.append({
-            "point_index": i,
-            "x": points[i, 0],
-            "y": points[i, 1],
-            "z": points[i, 2],
-            "tangent_x": tangents[i, 0],
-            "tangent_y": tangents[i, 1],
-            "tangent_z": tangents[i, 2],
-            "MISR": misr[i],
-            "area": area,
-            "perimeter": perimeter,
-            "hydraulic_diameter": Dh,
-            "Dh_2*MISR_Ratio": Dh_misr_ratio
-        })
 
-    print()
+        if CREATE_CSV:
+            #Appending to the results array for putting into the csv file
+            results.append({
+                "point_index": i,
+                "x": points[i, 0],
+                "y": points[i, 1],
+                "z": points[i, 2],
+                "tangent_x": tangents[i, 0],
+                "tangent_y": tangents[i, 1],
+                "tangent_z": tangents[i, 2],
+                "MISR": misr[i],
+                "area": area,
+                "perimeter": perimeter,
+                "hydraulic_diameter": Dh,
+                "Dh_2*MISR_Ratio": Dh_misr_ratio
+            })
 
-    #Write CSV
-    fieldnames = list(results[0].keys())
-    with open(CSV, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(results)
+    if CREATE_CSV:
+        write_csv(CSV, results)
 
-    #Loading centerline again to attach new data
-    out_centerline = pv.read(VTP)
-    #Adding new arrays to point data
-    out_centerline.point_data["CrossSectionArea"] = c_areas
-    out_centerline.point_data["CrossSectionPerimeter"] = c_perimeters
-    out_centerline.point_data["HydraulicDiameter"] = c_dhs
-    out_centerline.point_data["DhMISRRatio"] = c_ratios
-
-    OUT_VTP = VTP.replace(".vtp", "_with_metrics.vtp") #Creating file path for new vtp centerline file with metrics
-    out_centerline.save(OUT_VTP)
-    print(f"Saved updated centerline file with area, perimeter, and hydraulic diameter added to point data to: {OUT_VTP}")
+    write_output_vtp(VTP, c_areas, c_perimeters, c_dhs, c_ratios)
 
     #Validation metrics
     valid = sum(1 for r in results if not np.isnan(r["area"]))
+    print()
     print(f"\nDone. {valid}/{len(results)} points had valid cross-sections")
-    print(f"Skipped (no intersection between plane and STL mesh triangles): {skipped}")
+    print(f"Skipped (no intersection between plane and surface mesh triangles): {skipped}")
     print(f"Points skipped: {skipped_pts}")
-    print(f"Results written to: {CSV}")
-    print(f"Visualizations saved to folder: '{VIZ_DIR}/' (Load into Paraview to scroll)")
+    if CREATE_CSV:
+        validate_csv(csv_path=CSV, vtp_path=VTP)
+        print(f"Results written to: {CSV}")
+    if SAVE_OUTLINES:
+        print(f"Visualizations saved to folder: '{VIZ_DIR}/' (Load into Paraview to scroll)")
 
     areas = np.array([r["area"] for r in results if not np.isnan(r["area"])])
     Dhs = np.array([r["hydraulic_diameter"] for r in results if not np.isnan(r["hydraulic_diameter"])])
@@ -259,7 +307,8 @@ def main():
         print(f"                     mean: {Dhs.mean():.3f}")
         print(f"                     max: {Dhs.max():.3f}")
 
-    validate_csv(csv_path=CSV, vtp_path=VTP)
+    if CREATE_EXCEL:
+        create_excel_file(VTP, Path(EXCEL_OUTPUT), c_areas, c_perimeters)
 
 if __name__ == "__main__":
     main()

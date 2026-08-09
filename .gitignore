@@ -216,3 +216,15 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+#Output Folders and files
+*output*
+*.xlsx
+*data*
+*Data*
+Segmented_Vessels
+*.png
+*.vt*
+*Rojin*
+*Gurnish*
+*DAS*

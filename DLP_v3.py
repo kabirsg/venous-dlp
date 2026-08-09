@@ -20,11 +20,64 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 from scipy.signal import argrelextrema
 from scipy.signal import find_peaks
+from scipy.ndimage import uniform_filter1d
 from datetime import datetime
 import pickle
 
+PRESET_CASES = {
+    'CaseA': {
+        'inlet_flow_rate': 3.73,
+        'cline': "/home/kabir/masters_files/Gurnish_cases/Good/A/CaseA_centerline_with_metrics.vtp",
+        'fig_save_folder': 'outputs',
+        'case_name': 'CaseA',
+        'cfd_case_name': 'Case A individual'
+    },
+    'CaseC': {
+        'inlet_flow_rate': 5.00,
+        'cline': "/home/kabir/masters_files/Gurnish_cases/Good/C/CaseC_centerline_with_metrics.vtp",
+        'fig_save_folder': 'outputs',
+        'case_name': 'CaseC',
+        'cfd_case_name': 'Case C individual'
+    },
+    'CaseE': {
+        'inlet_flow_rate': 3.48,
+        'cline': "/home/kabir/masters_files/Gurnish_cases/Good/E/CaseE_centerline_with_metrics.vtp",
+        'fig_save_folder': 'outputs',
+        'case_name': 'CaseE',
+        'cfd_case_name': 'Case E individual'
+    },
+    'CaseF': {
+        'inlet_flow_rate': 7.93,
+        'cline': "/home/kabir/masters_files/Gurnish_cases/Good/F/CaseF_centerline_with_metrics.vtp",
+        'fig_save_folder': 'outputs',
+        'case_name': 'CaseF',
+        'cfd_case_name': 'Case F individual'
+    },
+    'CaseG': {
+        'inlet_flow_rate': 5.18,
+        'cline': "/home/kabir/masters_files/Gurnish_cases/Good/G/CaseG_centerline_with_metrics.vtp",
+        'fig_save_folder': 'outputs',
+        'case_name': 'CaseG',
+        'cfd_case_name': 'Case G individual'
+    },
+    'CaseH': {
+        'inlet_flow_rate': 4.50,
+        'cline': "/home/kabir/masters_files/Gurnish_cases/Good/H/CaseH_centerline_with_metrics.vtp",
+        'fig_save_folder': 'outputs',
+        'case_name': 'CaseH',
+        'cfd_case_name': 'Case H individual'
+    },
+    'CaseI': {
+        'inlet_flow_rate': 5.40,
+        'cline': "/home/kabir/masters_files/Gurnish_cases/Good/I/CaseI_centerline_with_metrics.vtp",
+        'fig_save_folder': 'outputs',
+        'case_name': 'CaseI',
+        'cfd_case_name': 'Case I individual'
+    },
+}
+
 class LumpedParameterModel():
-    def __init__(self, centerline_file, Q, rho, Kt, mu, exp, fig_save_folder, case_name, inlet_point_idx=0):
+    def __init__(self, centerline_file, Q, rho, Kt, mu, exp, fig_save_folder, case_name, cfd_case_name,inlet_point_idx=0):
         self.centerline_file = centerline_file
         self.flow_rate = Q
         self.density = rho
@@ -33,6 +86,7 @@ class LumpedParameterModel():
         self.expansion = exp
         self.figure_save_folder = fig_save_folder
         self.case_name = case_name
+        self.cfd_case_name = cfd_case_name
         self.inlet_point_idx = inlet_point_idx
 
         self.no_visc_in_exp = True
@@ -195,21 +249,9 @@ class LumpedParameterModel():
         - result: Rolling averaged curvature array
     '''
     def average_curvature(self, curvature_array, window_size=7):
-        #Work on a copy
-        result = curvature_array.astype(float).copy()
-
-        #1. Compute rolling average for valid positions
-        weights = np.ones(window_size) / window_size
-        valid_avg = np.convolve(curvature_array, weights, mode="valid")
-
-        #2. Determine index offsets for left and right edges
-        left_offset = window_size // 2
-        right_offset = left_offset + len(valid_avg)
-
-        #3. Replace only the interior values
-        result[left_offset:right_offset] = valid_avg
-
-        return result
+        #Change the case name to reflect the window size of the averaging
+        self.case_name = f"{self.case_name}{window_size}"
+        return uniform_filter1d(curvature_array.astype(float), size=window_size, mode="nearest")
 
     '''
     Creating arrays for the other class functions to use
@@ -240,11 +282,14 @@ class LumpedParameterModel():
         else:
             raise ValueError("No Average Curvature or Curvature column found")
         curvature_array_np *= 10 #Adjusting for units: 1/mm -> 1/cm
-        if "AvgCurv" in self.case_name:
+        if "avg" in self.case_name:
             print("Using Averaged Curvature")
-            avg_curvs = self.average_curvature(curvature_array_np, window_size=3)
+            self.original_curv = curvature_array_np.copy()
+            avg_curvs = self.average_curvature(curvature_array_np, window_size=11)
+            self.avg_curvs = avg_curvs.copy()
             self.curvature_array_np = 1/avg_curvs
         else:
+            self.case_name = f"{self.case_name}_avg1"
             self.curvature_array_np = 1/curvature_array_np #Converting this to the radius of curvature. Units: cm. Note: Will print a warning if division by zero but will make value infinity and move on
 
         self.length_array = self.create_length_array()
@@ -328,9 +373,7 @@ class LumpedParameterModel():
         self.multiplier_array = multiplier_array
         self.visc_dis_array = visc_diss_array
         self.Ks_array = K_array
-        # print(f"Total Viscous Resistance: {sum(self.viscous_resistances)}")
-        # print(f"Average of the multipliers: {sum(multiplier_array)/len(multiplier_array):.10f}")
-
+        
     #############################
     ### EXPANSION RESISTANCES ###
     #############################
@@ -427,28 +470,6 @@ class LumpedParameterModel():
                 resistances[res_idx] += r_per_point
         
         return resistances
-    
-    '''
-    Distributes the expansion losses in the post-stenotic expansion region proportional to the inverse of the radius.
-    Note: This function applies loss AT the stenotic point as well as after, unlike the other distribution functions above.
-    '''
-    def distribute_expansion_resistance_inverse(self, min_idx, val, resistances, max_indices):
-        #Find the next maximum after this local minimum
-        next_max = max_indices[max_indices > min_idx]
-        if len(next_max) == 0:
-            resistances[min_idx] += val
-            return resistances
-        
-        next_max_idx = next_max[0]
-
-        #Compute radius increase at each step in the region
-        #Weight at point i = inverse to the proportion of the total "radius" at that particular point
-        total_weight = sum(self.radius_array_np[min_idx:next_max_idx])
-        for i in range(min_idx, next_max_idx+1):
-            weight = self.radius_array_np[i] / total_weight
-            resistances[i] += (val * weight)
-
-        return resistances
 
     #############################
     ### PRESSURE CALCULATIONS ###
@@ -512,8 +533,7 @@ class LumpedParameterModel():
         with open("Gurnish_Data/Gurnish_Case_Data.pkl", "rb") as f:
             zones_df = pickle.load(f)
 
-        case_name = config.dlp_cfd_case_name
-
+        case_name = self.cfd_case_name
         x = zones_df[case_name]["dist"]
         pcen = zones_df[case_name]["pcen"]
         return x, pcen
@@ -523,7 +543,7 @@ class LumpedParameterModel():
         with open("Gurnish_Data/Gurnish_Case_Data.pkl", "rb") as f:
             df = pickle.load(f)
 
-        case_name = config.dlp_cfd_case_name
+        case_name = self.cfd_case_name
         x = df[case_name]["dist"]
         pber = df[case_name]["pber"]
         return x, pber
@@ -531,7 +551,7 @@ class LumpedParameterModel():
     '''
     Pressure Drop Plots with all sources and the total and a separate plot for CSA
     '''
-    def plot_p_drops(self):
+    def plot(self):
         # Using the same centerline slicing as your previous plots
         x = self.length_array[1:-1]
         
@@ -586,16 +606,18 @@ class LumpedParameterModel():
         #Bernoulli
         x4, pber = self.get_bernoulli_data()
         dP_ber_data_array = [0]
-        count_1 = 0
-        count_2 = 0
+        acc_ber = np.zeros(len(x4)) #Accumulated Bernoulli data
         for i in range(1, len(x4)):
             i_back_dP = pber[i-1] - pber[i]
             if i_back_dP >= -0.5:
                 dP_ber_data_array.append(i_back_dP)
-                count_1 += 1
             else:
                 dP_ber_data_array.append(np.nan)
-                count_2 += 1
+
+            if pber[i] < pber[i-1]:
+                acc_ber[i] = acc_ber[i-1] + (pber[i] - pber[i-1])
+            else:
+                acc_ber[i] = acc_ber[i-1]
         
         dP_dict = {
             "x": x3,
@@ -618,6 +640,7 @@ class LumpedParameterModel():
         ax1.plot(x, self.pressures_mmHg, color='black', linewidth=1, label="Total Pressure")
         ax1.plot(x2, cfd_data, color='black', linewidth=2, linestyle="--", label="CFD Pressure")
         ax1.plot(x4, pber, color="purple", linewidth=1, label="Bernoulli")
+        # ax1.plot(x4, acc_ber, color="purple", linewidth=1, label="Bernoulli")
 
         #CSA on twin axis
         ax1b = ax1.twinx()
@@ -625,9 +648,8 @@ class LumpedParameterModel():
         ax1b.tick_params(axis='y')
         ax1b.set_ylabel("Cross Sectional Area [cm^2]")
 
-        ax1.set_xlabel("Length Along Centerline (cm)", fontsize=16)
-        ax1.set_ylabel("Pressure Drop (mmHg)", fontsize=16)
-        ax1.set_title("Pressure Drop in LPM vs. CFD vs. Bernoulli", fontsize=16)
+        ax1.set_ylabel("Pressure Drop (mmHg)", fontsize=12)
+        # ax1.set_title("Pressure Drop in LPM vs. CFD vs. Bernoulli", fontsize=16)
         ax1.grid(True, linestyle='--', alpha=0.7)
         ax1.set_xlim(min(x3), max(x3))
 
@@ -649,22 +671,22 @@ class LumpedParameterModel():
         ax2.tick_params(axis='y')
         ax2.grid(True, linestyle='--', alpha=0.7)
         ax2.set_xlim(min(x3), max(x3))
-        ax2.set_ylabel("Pressure Drop (mmHg)")
+        ax2.set_ylabel("Pressure Drop (mmHg)", fontsize=12)
 
         ax2b = ax2.twinx()
         ax2b.plot(x3, self.area_array_np[1:-1], color="pink", linewidth=1, label="CSA")
         ax2b.tick_params(axis='y')
 
         ax2b.set_ylabel("Cross Sectional Area [cm^2]")
-        ax2.set_title("Instantaneous Pressure Drops in LPM vs. CFD vs. Bernoulli", fontsize=20)
+        # ax2.set_title("Instantaneous Pressure Drops in LPM vs. CFD vs. Bernoulli", fontsize=20)
         ax2.grid(True, linestyle='--', alpha=0.7)
         
         ax3.stackplot(x3, bar_y, labels=['I', 'II', 'III'], colors=['red', 'green', 'blue'])
         ax3.set_ylim(0, 100)
         ax3.set_xlim(min(x3), max(x3))
-        ax3.set_ylabel("% of Pressure Drop")
+        ax3.set_ylabel("% of Pressure Drop", fontsize=12)
         ax3.set_xlabel("Length Along Centerline (cm)")
-        ax3.set_title("Proportion of Pressure Drop due to Different Contributions for Each Point", fontsize=16)
+        # ax3.set_title("Proportion of Pressure Drop due to Different Contributions for Each Point", fontsize=16)
 
         ax3b = ax3.twinx()
         ax3b.plot(x3, self.area_array_np[1:-1], color="pink", linewidth=1, label="CSA")
@@ -676,7 +698,7 @@ class LumpedParameterModel():
         output_dir = Path(f"{self.figure_save_folder}/{self.case_name}_v3")
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        save_path = f"{output_dir}/pdrop_w_bar_exp_{self.expansion}.png"
+        save_path = f"{output_dir}/{self.case_name}.png"
         plt.savefig(save_path, dpi=300)
         plt.show()
         print(save_path)
@@ -794,6 +816,10 @@ class LumpedParameterModel():
             "Inlet Flow Rate [mL/s]": Q_array
         }
 
+        if hasattr(self, 'avg_curvs'):
+            data["Averaged Curvature"] = self.avg_curvs
+            data["Original Curvature"] = self.original_curv
+
         # 2. Create the DataFrame
         df = pd.DataFrame(data)
 
@@ -801,6 +827,55 @@ class LumpedParameterModel():
         output_dir = Path(f"{self.figure_save_folder}/{self.case_name}_v3")
         df.to_excel(f"{output_dir}/{self.case_name}_v3.xlsx", index=False)
         print(f"Excel file '{self.case_name}_v3.xlsx' has been generated and saved to the {output_dir} directory.")
+
+    '''
+    Creates a file (and saves in the output directory) that highlights the regions that an expansion region is present
+    Basically copying over the relevant parts of the region_highlight.py file
+    '''
+    def highlight_expansion_regions(self):
+        import supplemental_scripts.DLP_region_highlight as rh
+
+        #Creating the expansion regions dictionary
+        exp_regions = self.expansion_regions.copy()
+        regions = {}
+        for i in range(len(exp_regions)):
+            regions[i] = (exp_regions[i][0], exp_regions[i][1])
+
+        save_path = f"{self.figure_save_folder}/{self.case_name}_v3/Exp_highlight.vtp"
+        rh.highlight_regions(self.centerline_file, save_path, regions)
+
+    def highlight_neg_ber_regions(self):
+        import supplemental_scripts.DLP_region_highlight as rh
+
+        #Creating the regions dictionary based on where the bernoulli values are < 0
+        _, pber = self.get_bernoulli_data()
+
+        regions = {}
+        check_vals = {}
+        start = -1
+        end = -1
+        count = 0
+        dP_ber_data_array = [0]
+        for i in range(1, len(pber)):
+            i_back_dP = pber[i-1] - pber[i]
+            if i_back_dP < 0:
+                check_vals[i] = float(i_back_dP)
+                if start != -1:
+                    end = i
+                else:
+                    start = i
+            else:
+                if start != -1 and end != -1:
+                    regions[count] = (start, end)
+                    count += 1
+                    start = -1
+                    end = -1
+                else:
+                    continue
+        print(regions)
+        print(check_vals)
+        save_path = f"{self.figure_save_folder}/{self.case_name}_v3/Ber_Exp_highlight.vtp"
+        rh.highlight_regions(self.centerline_file, save_path, regions)
 
     '''
     Function to run everything in the correct order based on the parameter given during class initialization,
@@ -821,9 +896,11 @@ class LumpedParameterModel():
             self.calculate_pressures()
         
         # self.generate_pressure_drop_contributions_plots()
-        self.plot_p_drops()
+        self.plot()
 
-        self.excel_values()
+        # self.excel_values()
+        # self.highlight_expansion_regions()
+        # self.highlight_neg_ber_regions()
     
 def main():
     try:
@@ -839,9 +916,28 @@ def main():
         except:
             INLET_POINT_IDX = 0 #If the user doesn't set an inlet point id, then assuming that the inlet is labelled as the first point
 
-        centerline_file_PATH = config.dlp_cline_file_path
-        FIGURE_SAVE_FOLDER = config.dlp_fig_save_folder
+        #Using a preset case configuration if it's a default case
         CASE_NAME = config.dlp_case_name
+        if CASE_NAME in PRESET_CASES:
+            try:
+                print("Using preset file path")
+                INLET_FLOW_RATE = PRESET_CASES[CASE_NAME]['inlet_flow_rate']
+                cline_file_path = PRESET_CASES[CASE_NAME]['cline']
+                FIGURE_SAVE_FOLDER = PRESET_CASES[CASE_NAME]['fig_save_folder']
+                CASE_NAME = PRESET_CASES[CASE_NAME]['case_name']
+                CFD_CASE_NAME = PRESET_CASES[CASE_NAME]['cfd_case_name']
+            except:
+                #Defaulting back to using the config file as normal
+                print("Defaulting to config file settings")
+                cline_file_path = config.dlp_cline_file_path
+                FIGURE_SAVE_FOLDER = config.dlp_fig_save_folder
+                CFD_CASE_NAME = config.dlp_cfd_case_name
+        else:
+            print("Using config file settings")
+            cline_file_path = config.dlp_cline_file_path
+            FIGURE_SAVE_FOLDER = config.dlp_fig_save_folder
+            CASE_NAME = config.dlp_case_name
+            CFD_CASE_NAME = config.dlp_cfd_case_name
 
         
         
@@ -849,7 +945,7 @@ def main():
         raise Exception(f"Please ensure that the config.py file is present in the same folder as this file and all the necessary variables are present: \n{e}")
 
     lp = LumpedParameterModel(
-        centerline_file=centerline_file_PATH,
+        centerline_file=cline_file_path,
         Q=INLET_FLOW_RATE,
         rho=DENSITY,
         Kt=KT,
@@ -857,7 +953,7 @@ def main():
         exp=EXPANSION,
         fig_save_folder=FIGURE_SAVE_FOLDER,
         case_name=CASE_NAME,
-
+        cfd_case_name=CFD_CASE_NAME,
         inlet_point_idx=INLET_POINT_IDX
     )
 

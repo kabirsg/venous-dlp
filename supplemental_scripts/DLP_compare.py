@@ -18,49 +18,49 @@ PRESET_CASES = {
     'CaseA': {
         'inlet_flow_rate': 3.73,
         'cline': "/home/kabir/masters_files/Gurnish_cases/Good/A/CaseA_centerline_with_metrics.vtp",
-        'fig_save_folder': 'outputs',
+        'fig_save_folder': '../outputs',
         'case_name': 'CaseA',
         'cfd_case_name': 'Case A individual'
     },
     'CaseC': {
         'inlet_flow_rate': 5.00,
         'cline': "/home/kabir/masters_files/Gurnish_cases/Good/C/CaseC_centerline_with_metrics.vtp",
-        'fig_save_folder': 'outputs',
+        'fig_save_folder': '../outputs',
         'case_name': 'CaseC',
         'cfd_case_name': 'Case C individual'
     },
     'CaseE': {
         'inlet_flow_rate': 3.48,
         'cline': "/home/kabir/masters_files/Gurnish_cases/Good/E/CaseE_centerline_with_metrics.vtp",
-        'fig_save_folder': 'outputs',
+        'fig_save_folder': '../outputs',
         'case_name': 'CaseE',
         'cfd_case_name': 'Case E individual'
     },
     'CaseF': {
         'inlet_flow_rate': 7.93,
         'cline': "/home/kabir/masters_files/Gurnish_cases/Good/F/CaseF_centerline_with_metrics.vtp",
-        'fig_save_folder': 'outputs',
+        'fig_save_folder': '../outputs',
         'case_name': 'CaseF',
         'cfd_case_name': 'Case F individual'
     },
     'CaseG': {
         'inlet_flow_rate': 5.18,
         'cline': "/home/kabir/masters_files/Gurnish_cases/Good/G/CaseG_centerline_with_metrics.vtp",
-        'fig_save_folder': 'outputs',
+        'fig_save_folder': '../outputs',
         'case_name': 'CaseG',
         'cfd_case_name': 'Case G individual'
     },
     'CaseH': {
         'inlet_flow_rate': 4.50,
         'cline': "/home/kabir/masters_files/Gurnish_cases/Good/H/CaseH_centerline_with_metrics.vtp",
-        'fig_save_folder': 'outputs',
+        'fig_save_folder': '../outputs',
         'case_name': 'CaseH',
         'cfd_case_name': 'Case H individual'
     },
     'CaseI': {
         'inlet_flow_rate': 5.40,
         'cline': "/home/kabir/masters_files/Gurnish_cases/Good/I/CaseI_centerline_with_metrics.vtp",
-        'fig_save_folder': 'outputs',
+        'fig_save_folder': '../outputs',
         'case_name': 'CaseI',
         'cfd_case_name': 'Case I individual'
     },
@@ -72,7 +72,7 @@ class Compare():
         self.cline_file = case_dict["cline"]
         self.fig_save_folder = case_dict["fig_save_folder"]
         self.case_name = case_dict["case_name"]
-        self.gurnish_case_name = case_dict["gurnish_case_name"] #Case name Gurnish uses to distinguish the case in her tecplot data
+        self.cfd_case_name = case_dict["cfd_case_name"] #Case name Gurnish uses to distinguish the case in her tecplot data
         self.density = 1.06 #g/mL
         self.dyn_viscosity = 0.037 #dynamic viscosity mu value [Poise]
         self.K = 1.5 #Empirically derived constant
@@ -82,15 +82,20 @@ class Compare():
         self.get_values()
 
     def get_bernoulli_data(self):
-        with open("Gurnish_Data/Gurnish_Case_Data.pkl", "rb") as f:
+        with open("../Gurnish_Data/Gurnish_Case_Data.pkl", "rb") as f:
             df = pickle.load(f)
 
-        case_name = self.gurnish_case_name
+        case_name = self.cfd_case_name
         x = df[case_name]["dist"] #Distance along centerline
         pber = df[case_name]["pber"] #Bernoulli data
         pcen = df[case_name]["pcen"] #CFD data
-        return x, pber, pcen
 
+        pber_acc = self.accumulate_gurnish_data(pber)
+        return x, pber_acc, pcen
+
+    '''
+    Not in use! Or rather, it's just useless
+    '''
     def accumulate_gurnish_data(self, pber):
         total_pber = np.zeros(len(pber))
         for i in range (1, len(pber)):
@@ -100,6 +105,24 @@ class Compare():
                 total_pber[i] = total_pber[i-1]
 
         return total_pber
+
+    '''
+    Calculates the Reynold's number for each centerline point
+    
+    Returns:
+        - reynolds: List of the Reynold's number for all points. [Unitless]
+    '''
+    def create_reynolds_array(self):
+        reynolds = []
+        areas= self.area_array_np.copy()
+        radii = self.radius_array_np.copy()
+        flow_rate = self.Q
+        dyn_visc = self.dyn_viscosity
+        density = self.density
+        for i, rad in enumerate(radii):
+            re = ((flow_rate * density / areas[i]) * (rad*2)) / dyn_visc #Re = ((Q/CSA)*Dh)/dynamic viscosity 
+            reynolds.append(re)
+        return reynolds
 
     def get_values(self):
         reader = vtk.vtkXMLPolyDataReader()
@@ -117,14 +140,15 @@ class Compare():
         self.length_array_np = np.concatenate([[0.0], np.cumsum(seg_lens)]) 
         self.length_array_np /= 10 #Converting from units of mm -> cm
 
-        self.curvature_array_np = 1/vtk_to_numpy(self.polydata.GetPointData.GetArray("Curvature"))
+        self.curvature_array_np = 1 / vtk_to_numpy(polydata.GetPointData().GetArray("Curvature"))
+
+        self.re_array = self.create_reynolds_array()
 
     ########################
     ##### Calculations #####
     ########################
 
-    def calculate_velocities(self):
-        areas = self.area_array_np.copy()
+    def calculate_velocities(self, areas):
         V = np.zeros(len(areas))
         for i in range(len(areas)):
             V[i] = (self.Q / areas[i]) * 1.5
@@ -136,6 +160,9 @@ class Compare():
         areas = self.area_array_np.copy()
         delta_p = np.zeros(len(areas))
         total_p_drop = np.zeros(len(areas))
+
+        #Handle Vs
+        self.calculate_velocities(areas)
         # V_1_squared = self.V[0] ** 2
         V_1_squared = 0
         if V_1_squared == 0:
@@ -158,7 +185,7 @@ class Compare():
         CONST_TERM = 8 * self.dyn_viscosity / np.pi
 
         #Actually calculating the viscous resistance
-        visc_res[0] = CONST_TERM * (self.seg_lens_array_np[0]/2) / (self.radius_array_np[i] ** 4)
+        visc_res[0] = CONST_TERM * (self.seg_lens_array_np[0]/2) / (self.radius_array_np[0] ** 4)
         for i in range(1, len(self.length_array_np)-1):
             L_i = (self.seg_lens_array_np[i-1] + self.seg_lens_array_np[i]) / 2
             visc_res[i] = CONST_TERM * L_i / (self.radius_array_np[i] ** 4)
@@ -169,11 +196,11 @@ class Compare():
     def calculate_viscous_resistance_with_curvature(self):
         visc_res = np.zeros(len(self.length_array_np))
         CONST_TERM = 8 * self.dyn_viscosity / np.pi
-        K_i = self.re_array[i] * np.sqrt(self.radius_array_np[0] / self.curvature_array_np[0])
+        K_i = self.re_array[0] * np.sqrt(self.radius_array_np[0] / self.curvature_array_np[0])
         curv = 0.1033 * np.sqrt(K_i) * ((1+(1.729 / K_i)) ** 0.5 - (1.315 / np.sqrt(K_i))) ** -3
         visc_res[0] = (CONST_TERM * (self.seg_lens_array_np[0]/2) * curv) / (self.radius_array_np[0]**4)
         for i in range(1, len(self.area_array_np)-1):
-            K_i = self.re_array[i] * np.sqrt(self.radius_array_np[0] / self.curvature_array_np[0])
+            K_i = self.re_array[i] * np.sqrt(self.radius_array_np[i] / self.curvature_array_np[i])
             curv = 0.1033 * np.sqrt(K_i) * ((1+(1.729 / K_i)) ** 0.5 - (1.315 / np.sqrt(K_i))) ** -3
 
             multiplier = max(curv, 1e-8)
@@ -186,7 +213,7 @@ class Compare():
 
     def calculate_expansion_resistance(self):
         def calculate_added_resistance(A_s, A_0):
-            return ((self.density * self.Kt/(2*(A_0**2))) * ((A_0/A_s) - 1) ** 2) * abs(self.flow_rate)
+            return ((self.density * self.Kt/(2*(A_0**2))) * ((A_0/A_s) - 1) ** 2) * abs(self.Q)
 
         def distribute_expansion_resistance(min_idx, val, resistances, max_indices):
             #Find the next maximum after this local minimum
@@ -195,7 +222,6 @@ class Compare():
                 #If there is no downstream maximum - apply entirely at the minimum point
                 resistances[min_idx] += val
                 return resistances
-            
             next_max_idx = next_max[0]
     
             #Points in the recovery region (inclusive of both endpoints)
@@ -204,10 +230,7 @@ class Compare():
             #Equal share per point
             r_per_point = val / len(region_indices)
             for idx in region_indices:
-                #viscous resistances is offset by 1 (starts at centerline point 1)
-                res_idx = idx - 1
-                if 0 <= res_idx < len(self.viscous_resistances):
-                    resistances[res_idx] += r_per_point
+                resistances[idx] += r_per_point
             
             return resistances
 
@@ -254,16 +277,19 @@ class Compare():
                 return regions, first_max
 
         exp_res_dict = {}
-        exp_regions, first_max = create_min_max_array()
+        exp_regions, first_max = create_min_max_array(self)
 
         #Handle the first expansion region
-        A_0 = (self.area_array_np[self.first_max] + self.area_array_np[exp_regions[0][1]])
+        A_0 = (self.area_array_np[first_max] + self.area_array_np[exp_regions[0][1]])
         A_s = self.area_array_np[exp_regions[0][0]]
         delta_R = calculate_added_resistance(A_s, A_0)
         exp_res_dict[exp_regions[0][0]] = delta_R
         #Handle the rest of them
         for i in range(1, len(exp_regions)):
-            A_0 = (self.area_array_np[exp_regions[i-1][1]] + self.area_array_np[i][1])/2
+            if len(exp_regions[i]) != 2:
+                print("There is an error here with the array containing the start and end points of exp region: ", exp_regions[i])
+                print(exp_regions)
+            A_0 = (self.area_array_np[exp_regions[i-1][1]] + self.area_array_np[exp_regions[i][1]])/2
             A_s = self.area_array_np[exp_regions[i][0]]
 
             delta_R = calculate_added_resistance(A_s, A_0)
@@ -277,9 +303,9 @@ class Compare():
         self.exp_pressures = exp_resistances * self.Q / 1333.2 #in mmHg
 
     def combinations(self):
-        ber = self.ber_delta_p.copy()
+        ber = self.ber_p_drop.copy()
         vis = self.visc_pressure.copy()
-        vis_curv = self.dyn_viscosity.copy()
+        vis_curv = self.visc_curv_pressure.copy()
         exp = self.exp_pressures.copy()
 
         vce = vis_curv + exp
@@ -287,7 +313,6 @@ class Compare():
         vb = vis + ber
 
         return vce, vcb, vb
-            
 
     ####################
     ##### PLOTTING #####
@@ -298,7 +323,6 @@ class Compare():
         vce, vcb, vb = self.combinations()
         x_gur, _, pcen = self.get_bernoulli_data()
 
-
         #Creating the plot
         fig, ax = plt.subplots(1, 1, figsize=(10,6))
         ax.plot(x_gur, pcen, color="black", linestyle="--", label="CFD")
@@ -308,12 +332,17 @@ class Compare():
         ax.set_title(f"{self.case_name} Pressures", fontsize=16)
         ax.legend()
         plt.tight_layout()
-        plt.savefig(f"outputs_compare/{self.case_name}.png", dpi=300)
+        plt.savefig(f"../outputs_compare/{self.case_name}.png", dpi=300)
         plt.show()
             
 
     def run(self):
-        print(f"")
+        self.bernoulli()
+        self.calculate_viscous_resistance()
+        self.calculate_viscous_resistance_with_curvature()
+        self.calculate_expansion_resistance()
+
+        self.plot()
 
 def main():
     case = "CaseA"

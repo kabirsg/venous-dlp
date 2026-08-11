@@ -191,7 +191,13 @@ class Compare():
             visc_res[i] = CONST_TERM * L_i / (self.radius_array_np[i] ** 4)
         visc_res[-1] = CONST_TERM * (self.seg_lens_array_np[-1]/2) / (self.radius_array_np[-1] ** 4)
 
-        self.visc_pressure = self.Q * visc_res / 1333.2 #Viscous pressure drop in mmHg
+        visc_pressure = self.Q * visc_res / 1333.2 #Viscous pressure drop in mmHg
+
+        acc_visc_pressure = np.zeros(len(self.length_array_np))
+        for i in range(1, len(self.length_array_np)):
+            acc_visc_pressure[i] = acc_visc_pressure[i-1] - visc_pressure[i]
+
+        self.acc_visc_pressure = acc_visc_pressure
 
     def calculate_viscous_resistance_with_curvature(self):
         visc_res = np.zeros(len(self.length_array_np))
@@ -209,7 +215,13 @@ class Compare():
             visc_res[i] = (CONST_TERM * L_i * multiplier) / (self.radius_array_np[i]**4)
 
         visc_res[-1] = (CONST_TERM * (self.seg_lens_array_np[-1]/2) * curv) / (self.radius_array_np[-1]**4)
-        self.visc_curv_pressure = self.Q * visc_res / 1333.2
+        visc_curv_pressure = self.Q * visc_res / 1333.2
+
+        acc_visc_curv_pressure = np.zeros(len(self.length_array_np))
+        for i in range(1, len(self.length_array_np)):
+            acc_visc_curv_pressure[i] = acc_visc_curv_pressure[i-1] - visc_curv_pressure[i]
+
+        self.acc_visc_curv_pressure = acc_visc_curv_pressure
 
     def calculate_expansion_resistance(self):
         def calculate_added_resistance(A_s, A_0):
@@ -304,8 +316,8 @@ class Compare():
 
     def combinations(self):
         ber = self.ber_p_drop.copy()
-        vis = self.visc_pressure.copy()
-        vis_curv = self.visc_curv_pressure.copy()
+        vis = self.acc_visc_pressure.copy()
+        vis_curv = self.acc_visc_curv_pressure.copy()
         exp = self.exp_pressures.copy()
 
         vce = vis_curv + exp

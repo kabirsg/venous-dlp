@@ -202,7 +202,7 @@ def main():
     SKIP = 1
     NO_PROGRESS = False
     SAVE_OUTLINES = False
-    CREATE_CSV = False
+    CREATE_CSV = True
     CREATE_EXCEL = False
 
     if SAVE_OUTLINES:
@@ -293,7 +293,7 @@ def main():
     print(f"Points skipped: {skipped_pts}")
     if CREATE_CSV:
         validate_csv(csv_path=CSV, vtp_path=VTP)
-        print(f"Results written to: {CSV}")
+        print(f"CSV Results written to: {CSV}")
     if SAVE_OUTLINES:
         print(f"Visualizations saved to folder: '{VIZ_DIR}/' (Load into Paraview to scroll)")
 

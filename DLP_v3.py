@@ -21,7 +21,6 @@ import matplotlib.pyplot as plt
 from scipy.signal import argrelextrema
 from scipy.signal import find_peaks
 from scipy.ndimage import uniform_filter1d
-from datetime import datetime
 import pickle
 
 PRESET_CASES = {
@@ -345,30 +344,28 @@ class LumpedParameterModel():
         #Not using the first or last point since their radius values are a little funky and they are in the flow extension region anyways
         for i in range(1, len(self.point_array_np)-1):
             #Only calculating viscous resistance in non-expansion regions
-            # if points_type[i] == 0:
-            if True:
-                L_i = seg_lens_array[i]
-                
-                #Getting the radius at this point
-                rad = self.radius_array_np[i]
-                
-                #Calculating the curvature term - gamma
-                curv = self.curvature_array_np[i]
-                K_i = self.re_array[i] * np.sqrt(rad / curv)
-                K_array.append(K_i)
-                curve_res_i = 0.1033 * np.sqrt(K_i) * ((1+(1.729 / K_i)) ** 0.5 - (1.315 / np.sqrt(K_i))) ** -3 #Multiplier to add the curvature resistance term
-                
-                #The viscous resistance "multiplier" is the maximum of gamma and zeta
-                multiplier = max(curve_res_i, 1e-8)
-                multiplier_array.append(multiplier)
+            L_i = seg_lens_array[i]
+            
+            #Getting the radius at this point
+            rad = self.radius_array_np[i]
+            
+            #Calculating the curvature term - gamma
+            curv = self.curvature_array_np[i]
+            K_i = self.re_array[i] * np.sqrt(rad / curv)
+            K_array.append(K_i)
+            curve_res_i = 0.1033 * np.sqrt(K_i) * ((1+(1.729 / K_i)) ** 0.5 - (1.315 / np.sqrt(K_i))) ** -3 #Multiplier to add the curvature resistance term
+            
+            #The viscous resistance "multiplier" is the maximum of gamma and zeta
+            multiplier = max(curve_res_i, 1e-8)
+            multiplier_array.append(multiplier)
 
-                #Calculate the viscous resistance at this centerline point
-                visc_res = (CONST_TERM * L_i * multiplier) / (rad ** 4)
-                self.viscous_resistances.append(visc_res)
+            #Calculate the viscous resistance at this centerline point
+            visc_res = (CONST_TERM * L_i * multiplier) / (rad ** 4)
+            self.viscous_resistances.append(visc_res)
 
-                #Calculate the pure viscous dissipation for the purpose of debugging
-                visc_diss = (CONST_TERM * L_i) / (rad ** 4)
-                visc_diss_array.append(visc_diss)
+            #Calculate the pure viscous dissipation for the purpose of debugging
+            visc_diss = (CONST_TERM * L_i) / (rad ** 4)
+            visc_diss_array.append(visc_diss)
 
         self.multiplier_array = multiplier_array
         self.visc_dis_array = visc_diss_array
@@ -528,8 +525,6 @@ class LumpedParameterModel():
     ################
 
     def get_cfd_data(self):
-        import config
-
         with open("Gurnish_Data/Gurnish_Case_Data.pkl", "rb") as f:
             zones_df = pickle.load(f)
 
@@ -539,7 +534,6 @@ class LumpedParameterModel():
         return x, pcen
 
     def get_bernoulli_data(self):
-        import config
         with open("Gurnish_Data/Gurnish_Case_Data.pkl", "rb") as f:
             df = pickle.load(f)
 
@@ -552,7 +546,7 @@ class LumpedParameterModel():
     Pressure Drop Plots with all sources and the total and a separate plot for CSA
     '''
     def plot(self):
-        # Using the same centerline slicing as your previous plots
+        # Using the same centerline slicing as previous plots
         x = self.length_array[1:-1]
         
         # Slice the new pressure drop lists to match the length of x
@@ -702,14 +696,6 @@ class LumpedParameterModel():
         plt.savefig(save_path, dpi=300)
         plt.show()
         print(save_path)
-
-        dP_dict = {
-            "x": x3,
-            "Viscous Dissipation": dP_visc_diss_array,
-            "Curvature": dP_curv_array,
-            "Expansion": dP_exp_array,
-            "Total": dP_total
-        }
 
     '''
     Helper function for the plotting to give back the arrays that are needed to create the bar plots
@@ -938,8 +924,6 @@ def main():
             FIGURE_SAVE_FOLDER = config.dlp_fig_save_folder
             CASE_NAME = config.dlp_case_name
             CFD_CASE_NAME = config.dlp_cfd_case_name
-
-        
         
     except Exception as e:
         raise Exception(f"Please ensure that the config.py file is present in the same folder as this file and all the necessary variables are present: \n{e}")

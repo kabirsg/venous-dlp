@@ -37,7 +37,8 @@ PRESET_CASES = {
     },
     'CaseF': {
         'inlet_flow_rate': 7.93,
-        'cline': "/home/kabir/masters_files/Gurnish_cases/Good/F/CaseF_centerline_with_metrics.vtp",
+        # 'cline': "/home/kabir/masters_files/Gurnish_cases/Good/F/CaseF_centerline_with_metrics.vtp",
+        'cline': "/home/kabir/masters_files/Gurnish_cases/Good/F/CaseF_centerline_reversed_with_metrics.vtp",
         'fig_save_folder': 'outputs_ber',
         'case_name': 'CaseF',
         'gurnish_case_name': 'Case F individual'
@@ -58,9 +59,10 @@ PRESET_CASES = {
     },
     'CaseI': {
         'inlet_flow_rate': 5.40,
-        'cline': "/home/kabir/masters_files/Gurnish_cases/Good/I/CaseI_centerline_with_metrics.vtp",
-        'fig_save_folder': 'outputs_ber',
-        'case_name': 'CaseI',
+        # 'cline': "/home/kabir/masters_files/Gurnish_cases/Good/I/CaseI_centerline_with_metrics.vtp",
+        'cline': '/home/kabir/masters_files/Gurnish_cases/Good/I/CaseI_centerline_reversed_with_metrics.vtp',
+        'fig_save_folder': 'outputs_ber_rev',
+        'case_name': 'CaseI_rev',
         'gurnish_case_name': 'Case I individual'
     },
 }
@@ -74,8 +76,27 @@ class Bernoulli():
         self.gurnish_case_name = case_dict["gurnish_case_name"] #Case name Gurnish uses to distinguish the case in her tecplot data
         self.density = 1.06 #g/mL
         self.K = 1.5 #Empirically derived constant
-
+        print(f"Case: {self.case_name}")
         self.get_values()
+
+    def get_values(self):
+        reader = vtk.vtkXMLPolyDataReader()
+        reader.SetFileName(self.cline_file)
+        reader.Update()
+        polydata = reader.GetOutput()
+
+        # self.area_array_np = vtk_to_numpy(polydata.GetPointData().GetArray("CrossSectionArea")) / 100
+        self.area_array_np = vtk_to_numpy(polydata.GetPointData().GetArray("MaximumInscribedSphereRadius")) / 10 #Units of mm^2 -> cm^2
+        self.area_array_np = self.area_array_np ** 2
+        self.area_array_np *= np.pi
+        # print(self.area_array_np)
+        print(np.mean(self.area_array_np))
+
+        points = vtk_to_numpy(polydata.GetPoints().GetData())
+        diffs = np.diff(points, axis=0)
+        seg_lens = np.linalg.norm(diffs, axis=1)
+        self.length_array_np = np.concatenate([[0.0], np.cumsum(seg_lens)]) 
+        self.length_array_np /= 10 #Converting from units of mm^2 -> cm^2
 
     def get_bernoulli_data(self):
         with open("Gurnish_Data/Gurnish_Case_Data.pkl", "rb") as f:
@@ -87,19 +108,15 @@ class Bernoulli():
         pcen = df[case_name]["pcen"]
         return x, pber, pcen
 
-    def get_values(self):
-        reader = vtk.vtkXMLPolyDataReader()
-        reader.SetFileName(self.cline_file)
-        reader.Update()
-        polydata = reader.GetOutput()
-            
-        self.area_array_np = vtk_to_numpy(polydata.GetPointData().GetArray("CrossSectionArea")) / 100 #Units of cm^2
+    def accumulate_gurnish_data(self, pber):
+        total_pber = np.zeros(len(pber))
+        for i in range (1, len(pber)):
+            if pber[i] < pber[i-1]:
+                total_pber[i] = total_pber[i-1] + (pber[i] - pber[i-1])
+            else:
+                total_pber[i] = total_pber[i-1]
 
-        points = vtk_to_numpy(polydata.GetPoints().GetData())
-        diffs = np.diff(points, axis=0)
-        seg_lens = np.linalg.norm(diffs, axis=1)
-        self.length_array_np = np.concatenate([[0.0], np.cumsum(seg_lens)]) 
-        self.length_array_np /= 10 #Converting from units of mm^2 -> cm^2
+        return total_pber
         
     ########################
     ##### Calculations #####
@@ -107,19 +124,23 @@ class Bernoulli():
 
     def calculate_velocities(self):
         areas = self.area_array_np.copy()
+        print(np.mean(areas))
         V = np.zeros(len(areas))
         for i in range(len(areas)):
             V[i] = (self.Q / areas[i]) * 1.5
         print(f"Max Velocity: {max(V)}")
         print(f"Max Velocity Index: {np.argmax(V)}")
         self.V = V
+        print(np.mean(V))
 
     def calculate_pressure_drop(self):
         areas = self.area_array_np.copy()
         delta_p = np.zeros(len(areas))
         total_p_drop = np.zeros(len(areas))
-        V_1_squared = self.V[0] ** 2
-        # V_1_squared = 0
+        # V_1_squared = self.V[0] ** 2
+        V_1_squared = 0
+        if V_1_squared == 0:
+            self.case_name = f"{self.case_name}_0"
 
         for i in range(1, len(areas)):
             delta_p[i] = (-0.5 * self.density * (self.V[i]**2 - V_1_squared)) / 1333.2 #Calculating the instantaneous pressure drop at that point - in mmHg
@@ -133,15 +154,9 @@ class Bernoulli():
         self.delta_p = delta_p
         self.total_p_drop = total_p_drop
 
-    def accumulate_gurnish_data(self, pber):
-        total_pber = np.zeros(len(pber))
-        for i in range (1, len(pber)):
-            if pber[i] < pber[i-1]:
-                total_pber[i] = total_pber[i-1] + (pber[i] - pber[i-1])
-            else:
-                total_pber[i] = total_pber[i-1]
-
-        return total_pber
+    ####################
+    ##### PLOTTING #####
+    ####################
 
     def plot(self):
         #Getting true values from Gurnish's data
@@ -155,7 +170,7 @@ class Bernoulli():
 
         #Creating the plot
         fig, ax = plt.subplots(1, 1, figsize=(10,6))
-        ax.plot(x, y, color="orange", linewidth=2, label="Calculated - Accumulated")
+        ax.plot(x, y, color="red", linewidth=2, label="Calculated - Accumulated")
         ax.plot(x_true, acc_pber_gur, color="purple", linewidth=2, label="Gurnish")
         ax.plot(x_true, pcen_cfd, color="black", linewidth=2, label="CFD")
         ax.set_title(f"{self.case_name}", fontsize=16)
@@ -172,17 +187,81 @@ class Bernoulli():
         print(f"Minimum stenotic area: {min_area}\tIndex: {np.argmin(areas)}\n")
         print(f"Proximal area: {area_0}")
 
+    def check(self):
+        save_path = f"outputs_bernoulli/{self.case_name}.xlsx"
+        x_gur, pber_gur, _ = self.get_bernoulli_data()
+        acc_pber_gur = self.accumulate_gurnish_data(pber_gur)
+        dps = self.delta_p.copy()
+
+        #Create dfs to put into excel file
+        df_gur = pd.DataFrame({
+            "x_gur": x_gur,
+            "Gurnish Data": pber_gur,
+            "Accumulated Gurnish": acc_pber_gur,
+        })
+
+        df_me = pd.DataFrame({
+            "x_me": self.length_array_np,
+            "Me Delta p": dps,
+            "Me Accumulated": self.total_p_drop 
+        })
+
+        with pd.ExcelWriter(save_path) as writer:
+            df_me.to_excel(writer, sheet_name="Me", index=True)
+            df_gur.to_excel(writer, sheet_name="Gurnish", index=True)
+        
+        
+
     def run(self):
         self.calculate_velocities()
         self.calculate_pressure_drop()
 
         self.plot()
         self.metrics()
+        self.check()
+
+    def run_and_return(self):
+        self.calculate_velocities()
+        self.calculate_pressure_drop()
+
+        x_true, pber_gurnish, pcen_cfd = self.get_bernoulli_data()
+        acc_pber_gur = self.accumulate_gurnish_data(pber_gurnish)
+
+        #Get the calculated data
+        x = self.length_array_np
+        y = self.total_p_drop
+
+        return x, y, x_true, acc_pber_gur, pcen_cfd
+
+def run_them_all():
+    COLOURS = ["red", "blue", "green", "purple", "orange", "black", "gray"]
+    fig, ax = plt.subplots(1, 1, figsize=(10,6))
+    count = 0
+
+    for case, case_dict in PRESET_CASES.items():
+        colour = COLOURS[count]
+        count += 1
+        Ber = Bernoulli(case_dict)
+        x, y, x_gur, acc_pber_gur, pcen_cfd = Ber.run_and_return()
+
+        ax.plot(x, y, color=colour, label=f"Me: {case}")
+        ax.plot(x_gur, acc_pber_gur, color=colour, linestyle=":", label="Gurnish")
+        ax.plot(x_gur, pcen_cfd, color=colour, linestyle="--", label="CFD")
+
+    ax.legend()
+    ax.set_title("All Cases: My Bernoulli vs. Gurnish Bernoulli vs. CFD")
+    plt.tight_layout()
+    plt.savefig("outputs_bernoulli/all_cases.png", dpi=300)
+    plt.show()
+
 
 def main():
-    case = "CaseA"
-    Ber = Bernoulli(PRESET_CASES[case])
-    Ber.run()
+    case = "CaseF"
+    if case == "all":
+        run_them_all()
+    else:
+        Ber = Bernoulli(PRESET_CASES[case])
+        Ber.run()
 
 if __name__ == "__main__":
     main()

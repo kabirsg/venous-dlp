@@ -123,6 +123,7 @@ class Compare():
             re = ((flow_rate * density / areas[i]) * (rad*2)) / dyn_visc #Re = ((Q/CSA)*Dh)/dynamic viscosity 
             reynolds.append(re)
         return reynolds
+    
 
     def get_values(self):
         reader = vtk.vtkXMLPolyDataReader()
@@ -131,7 +132,7 @@ class Compare():
         polydata = reader.GetOutput()
 
         self.radius_array_np = vtk_to_numpy(polydata.GetPointData().GetArray("HydraulicDiameter")) / 20 #Diameter -> Radius, mm -> cm
-        self.area_array_np = vtk_to_numpy(polydata.GetPointData().GetArray("CrossSectionArea")) / 100 #Units of cm^2
+        self.area_array_np = vtk_to_numpy(polydata.GetPointData().GetArray("CrossSectionArea")) / 100 #mm^2 -> cm^2
 
         points = vtk_to_numpy(polydata.GetPoints().GetData())
         diffs = np.diff(points, axis=0)
@@ -140,7 +141,9 @@ class Compare():
         self.length_array_np = np.concatenate([[0.0], np.cumsum(seg_lens)]) 
         self.length_array_np /= 10 #Converting from units of mm -> cm
 
-        self.curvature_array_np = 1 / vtk_to_numpy(polydata.GetPointData().GetArray("Curvature"))
+        curv_array = vtk_to_numpy(polydata.GetPointData().GetArray("Curvature"))
+        self.curvature_array_np = curv_array * 10 # Adjusting for units: 1/mm -> 1/cm
+        self.curvature_array_np = 1 / self.curvature_array_np
 
         self.re_array = self.create_reynolds_array()
 
@@ -163,8 +166,8 @@ class Compare():
 
         #Handle Vs
         self.calculate_velocities(areas)
-        # V_1_squared = self.V[0] ** 2
-        V_1_squared = 0
+        V_1_squared = self.V[0] ** 2
+        # V_1_squared = 0
         if V_1_squared == 0:
             self.case_name = f"{self.case_name}_0"
 
@@ -191,7 +194,7 @@ class Compare():
             visc_res[i] = CONST_TERM * L_i / (self.radius_array_np[i] ** 4)
         visc_res[-1] = CONST_TERM * (self.seg_lens_array_np[-1]/2) / (self.radius_array_np[-1] ** 4)
 
-        visc_pressure = self.Q * visc_res / 1333.2 #Viscous pressure drop in mmHg
+        visc_pressure = (self.Q * visc_res) / 1333.2 #Viscous pressure drop in mmHg
 
         acc_visc_pressure = np.zeros(len(self.length_array_np))
         for i in range(1, len(self.length_array_np)):
@@ -211,7 +214,7 @@ class Compare():
 
             multiplier = max(curv, 1e-8)
 
-            L_i = self.length_array_np[i-1]/2 + self.length_array_np[i]/2
+            L_i = self.seg_lens_array_np[i-1]/2 + self.seg_lens_array_np[i]/2
             visc_res[i] = (CONST_TERM * L_i * multiplier) / (self.radius_array_np[i]**4)
 
         visc_res[-1] = (CONST_TERM * (self.seg_lens_array_np[-1]/2) * curv) / (self.radius_array_np[-1]**4)
@@ -222,6 +225,7 @@ class Compare():
             acc_visc_curv_pressure[i] = acc_visc_curv_pressure[i-1] - visc_curv_pressure[i]
 
         self.acc_visc_curv_pressure = acc_visc_curv_pressure
+        return
 
     def calculate_expansion_resistance(self):
         def calculate_added_resistance(A_s, A_0):
@@ -240,7 +244,7 @@ class Compare():
             region_indices = list(range(min_idx, next_max_idx + 1))
     
             #Equal share per point
-            r_per_point = val / len(region_indices)
+            r_per_point = -val / len(region_indices)
             for idx in region_indices:
                 resistances[idx] += r_per_point
             
@@ -312,7 +316,11 @@ class Compare():
         for key, val in exp_res_dict.items():
             exp_resistances = distribute_expansion_resistance(key, val, exp_resistances, max_indices)
 
-        self.exp_pressures = exp_resistances * self.Q / 1333.2 #in mmHg
+        total_e_res = np.zeros(len(exp_resistances))
+        total_e_res[0] = exp_resistances[0]
+        for i in range(1, len(total_e_res)):
+            total_e_res[i] = total_e_res[i-1] + exp_resistances[i]
+        self.exp_pressures = total_e_res * self.Q / 1333.2 #in mmHg
 
     def combinations(self):
         ber = self.ber_p_drop.copy()
@@ -320,11 +328,17 @@ class Compare():
         vis_curv = self.acc_visc_curv_pressure.copy()
         exp = self.exp_pressures.copy()
 
-        vce = vis_curv + exp
+        #ESSENTIALLY THE SAME SHIT THAT DIDN'T WORK IDIOT
+        vce = vis_curv.copy()
+        for i in range(len(vce)):
+            vce[i] = vce[i] + exp[i]
         vcb = vis_curv + ber
         vb = vis + ber
+        cb = vis_curv - vis + ber #viscous + curvature - viscous _ bernoulli = curvature + bernoulli
+        bmc = ber - vis_curv + vis #bernoulli - viscous - curvature + viscous = bernoulli - curvature
+        
 
-        return vce, vcb, vb
+        return vce, vcb, vb, vis_curv, ber, exp, cb, bmc
 
     ####################
     ##### PLOTTING #####
@@ -332,21 +346,43 @@ class Compare():
 
     def plot(self):
         x = self.length_array_np
-        vce, vcb, vb = self.combinations()
+        vce, vcb, vb, vc, b, e, cb, bmc = self.combinations()
         x_gur, _, pcen = self.get_bernoulli_data()
+
+        self.create_excel(x, vce, vcb, vb, vc, b, e)
 
         #Creating the plot
         fig, ax = plt.subplots(1, 1, figsize=(10,6))
         ax.plot(x_gur, pcen, color="black", linestyle="--", label="CFD")
-        ax.plot(x, vce, color="red", label="Viscous Curvature Expansion")
-        ax.plot(x, vcb, color="green", label="Viscous Curvature Bernoulli")
-        ax.plot(x, vb, color="blue", label="Viscous Bernoulli")
+        ax.plot(x, vce, color="red", label="Viscous Curvature Expansion (DLP)")
+        # ax.plot(x, vcb, color="green", label="Viscous Curvature Bernoulli")
+        # ax.plot(x, vb, color="magenta", label="Viscous Bernoulli")
+        # ax.plot(x, vc, color="orange", label="Curvature")
+        # ax.plot(x, b, color="purple", label="Bernoulli")
+        # ax.plot(x, cb, color="pink", label="Curvature Bernoulli")
+        ax.plot(x, bmc, color="blue", label="Bernoulli - Curvature")
         ax.set_title(f"{self.case_name} Pressures", fontsize=16)
         ax.legend()
         plt.tight_layout()
         plt.savefig(f"../outputs_compare/{self.case_name}.png", dpi=300)
         plt.show()
-            
+
+    def create_excel(self, x, vce, vcb, vb, vc, ber, e):
+        data = {
+            "Length Along Centerline (cm)": x,
+            "Viscous + Curvature [mmHg]": vc,
+            "VC + Expansion [mmHg]": vce,
+            "VC + Bernoulli [mmHg]": vcb,
+            "Viscous + Bernoulli [mmHg]": vb,
+            "Bernoulli [mmHg]": ber,
+            "Expansion [mmHg]": e
+        }
+
+        df = pd.DataFrame(data)
+        output_dir = "../outputs_compare"
+        df.to_excel(f"{output_dir}/{self.case_name}.xlsx", index=True)
+        print(f"Saved Excel file to {output_dir}/{self.case_name}.xlsx")
+
 
     def run(self):
         self.bernoulli()
@@ -355,11 +391,54 @@ class Compare():
         self.calculate_expansion_resistance()
 
         self.plot()
+        
+
+    def run_and_return(self):
+        self.bernoulli()
+        self.calculate_viscous_resistance()
+        self.calculate_viscous_resistance_with_curvature()
+        self.calculate_expansion_resistance()
+        vce, _, _, _, _, _, _, bmc = self.combinations()
+        x = self.length_array_np
+        x_gur, _, p_cen = self.get_bernoulli_data() #Getting the x scale and cfd data from Gurnish's data
+
+        return x, vce, bmc, x_gur, p_cen
+
+def run_them_all():
+    COLOURS = ["red", "blue", "green", "purple", "orange", "black", "gray"]
+    case_data = {}
+    fig, ax = plt.subplots(1, 1, figsize=(10,6))
+    count = 0
+
+    for case, case_dict in PRESET_CASES.items():
+        colour = COLOURS[count]
+        count += 1
+        comparer = Compare(case_dict)
+        x, vce, bmc, x_gur, p_cen = comparer.run_and_return()
+        # case_data[case] = {
+        #     "x": x,
+        #     "vce": vce,
+        #     "bmc": bmc,
+        #     "x_gur": x_gur,
+        #     "CFD": p_cen
+        # }
+        ax.plot(x, vce, color=colour, label=f"DLP {case}")
+        ax.plot(x, bmc, color=colour, linestyle=":", label="Ber - Cur")
+        ax.plot(x_gur, p_cen, color=colour, linestyle="--", label="ax.CFD")
+
+    ax.legend()
+    ax.set_title("All cases")
+    plt.tight_layout()
+    plt.savefig("../outputs_compare/all_cases.png", dpi=300)
+    plt.show()
 
 def main():
-    case = "CaseA"
-    comparer = Compare(PRESET_CASES[case])
-    comparer.run()
+    case = "CaseI"
+    if case == "all":
+        run_them_all()
+    else:
+        comparer = Compare(PRESET_CASES[case])
+        comparer.run()
 
 if __name__ == "__main__":
     main()

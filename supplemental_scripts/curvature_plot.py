@@ -2,27 +2,15 @@ import numpy as np
 import vtk
 from vtk.util.numpy_support import vtk_to_numpy
 import matplotlib.pyplot as plt
-import pandas as pd
-import pickle
-import os
-import pyvista as pv
-try:
-    import config
-except:
-    raise FileNotFoundError("Config file not found")
-
-
-'''
-Calculates the rolling average
-
-Return:
-    - pd.core.series.Series of the Rolling average for every point
-'''
-# def rolling_average(curvs, window):
-#     return curvs.rolling(window=window, center=True).mean()
 
 
 def rolling_average(curvature_array, window=7):
+    '''
+    Calculates the rolling average
+
+    Return:
+        - pd.core.series.Series of the Rolling average for every point
+    '''
     #Work on a copy
     result = curvature_array.astype(float).copy()
 
@@ -41,9 +29,8 @@ def rolling_average(curvature_array, window=7):
 
 
 def main():
-    VTP = config.dlp_cline_file_path
-    if not os.path.exists(VTP):
-        raise FileNotFoundError("VTP File defined in the config file not found")
+    VTP = ""
+    CASE_NAME = ""
 
     reader = vtk.vtkXMLPolyDataReader()
     reader.SetFileName(VTP)
@@ -75,7 +62,7 @@ def main():
 
     plt.tight_layout()
 
-    save_path = f"curvature_comp/{config.dlp_case_name}.png"
+    save_path = f"curvature_comp/{CASE_NAME}.png"
     plt.savefig(save_path, dpi=300)
     plt.show()
 

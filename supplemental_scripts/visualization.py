@@ -1,20 +1,19 @@
-import pyvista as pv
-import numpy as np
-from scipy.spatial import cKDTree
-
 """
 Script to map 1D centerline metrics (Area, Perimeter, Dh)
 onto a 3D surface mesh using nearest-neighbor mapping.
 """
+
+import pyvista as pv
+import numpy as np
+from scipy.spatial import cKDTree
+
+
 def main():
     # 1. Define your file paths
-    try:
-        import config
-        SURFACE_STL = config.v_stl
-        CENTERLINE_VTP = config.v_cline_vtp_with_metrics
-        OUT_SURFACE_VTP = config.v_out_surface_vtp
-    except:
-        raise FileNotFoundError("Could not find config file. Please ensure it's in the same directory as this script and rerun.")
+    
+    SURFACE_STL = ""
+    CENTERLINE_VTP = ""
+    OUT_SURFACE_VTP = ""
 
     # 2. Load the data
     print(f"Loading 3D Surface: {SURFACE_STL}")
